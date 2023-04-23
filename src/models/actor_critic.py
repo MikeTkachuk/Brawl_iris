@@ -39,39 +39,64 @@ class ImagineOutput:
     ends: torch.BoolTensor
 
 
+class Backbone(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # TODO try batchnorm
+        self.conv1 = nn.Conv2d(3, 32, 7, stride=2, padding=0)
+        self.maxp1 = nn.Identity()
+        self.conv2 = nn.Conv2d(32, 64, 5, stride=2, padding=0)
+        self.maxp2 = nn.Identity()
+        self.conv3 = nn.Conv2d(64, 64, 5, stride=2, padding=0)
+        self.maxp3 = nn.Identity()
+        self.conv4 = nn.Conv2d(64, 128, 3, stride=1, padding=0)
+        self.maxp4 = nn.MaxPool2d(3, 3)
+        self.conv5 = nn.Conv2d(128, 128, 3, stride=1, padding=1)
+        self.maxp5 = nn.MaxPool2d(2, 2)
+        self.conv6 = nn.Conv2d(128, 256, 3, stride=1, padding=1)
+        self.maxp6 = nn.MaxPool2d(2, 2)
+
+    def forward(self, x):
+        return torch.zeros(size=(x.shape[0], 256))
+        x = F.relu(self.maxp1(self.conv1(x)))
+        x = F.relu(self.maxp2(self.conv2(x)))
+        x = F.relu(self.maxp3(self.conv3(x)))
+        x = F.relu(self.maxp4(self.conv4(x)))
+        x = F.relu(self.maxp5(self.conv5(x)))
+        x = F.relu(self.maxp6(self.conv6(x)))
+        return x
+
+
 class ActorCritic(nn.Module):
     def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False) -> None:
         # TODO add act continuous size #1done
         super().__init__()
         self.use_original_obs = use_original_obs
-        self.conv1 = nn.Conv2d(3, 32, 3, stride=1, padding=1)
-        self.maxp1 = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 32, 3, stride=1, padding=1)
-        self.maxp2 = nn.MaxPool2d(2, 2)
-        self.conv3 = nn.Conv2d(32, 64, 3, stride=1, padding=1)
-        self.maxp3 = nn.MaxPool2d(2, 2)
-        self.conv4 = nn.Conv2d(64, 64, 3, stride=1, padding=1)
-        self.maxp4 = nn.MaxPool2d(2, 2)
 
-        self.lstm_dim = 512
-        self.lstm = nn.LSTMCell(1024, self.lstm_dim)
+        self.backbone = Backbone()
+        self.lstm_dim = 256
+        self.lstm = nn.LSTMCell(256, self.lstm_dim)
         self.hx, self.cx = None, None
 
         self.act_vocab_size = act_vocab_size
         self.act_continuous_size = act_continuous_size
-        self.critic_linear = nn.Linear(512, 1)
-        self.actor_linear = nn.Linear(512,
+        self.critic_linear = nn.Linear(self.lstm_dim, 1)
+        self.actor_linear = nn.Linear(self.lstm_dim,
                                       self.act_vocab_size + 2 * self.act_continuous_size)  # TODO add more entries for continuous (2*x) for mean and std #1done
 
     def __repr__(self) -> str:
         return "actor_critic"
+
+    @property
+    def device(self):
+        return self.backbone.parameters().__next__().device
 
     def clear(self) -> None:
         self.hx, self.cx = None, None
 
     def reset(self, n: int, burnin_observations: Optional[torch.Tensor] = None,
               mask_padding: Optional[torch.Tensor] = None) -> None:
-        device = self.conv1.weight.device
+        device = self.backbone.conv1.weight.device
         self.hx = torch.zeros(n, self.lstm_dim, device=device)
         self.cx = torch.zeros(n, self.lstm_dim, device=device)
         if burnin_observations is not None:
@@ -87,17 +112,14 @@ class ActorCritic(nn.Module):
         self.cx = self.cx[mask]
 
     def forward(self, inputs: torch.FloatTensor, mask_padding: Optional[torch.BoolTensor] = None) -> ActorCriticOutput:
-        assert inputs.ndim == 4 and inputs.shape[1:] == (3, 64, 64)
+        assert inputs.ndim == 4  # and inputs.shape[1:] == (3, 64, 64)
         assert 0 <= inputs.min() <= 1 and 0 <= inputs.max() <= 1
         assert mask_padding is None or (
-                    mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0) and mask_padding.any())
+                mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0) and mask_padding.any())
         x = inputs[mask_padding] if mask_padding is not None else inputs
 
         x = x.mul(2).sub(1)
-        x = F.relu(self.maxp1(self.conv1(x)))
-        x = F.relu(self.maxp2(self.conv2(x)))
-        x = F.relu(self.maxp3(self.conv3(x)))
-        x = F.relu(self.maxp4(self.conv4(x)))
+        x = self.backbone(x)
         x = torch.flatten(x, start_dim=1)
 
         if mask_padding is None:
@@ -106,7 +128,8 @@ class ActorCritic(nn.Module):
             self.hx[mask_padding], self.cx[mask_padding] = self.lstm(x, (self.hx[mask_padding], self.cx[mask_padding]))
 
         full_logits = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
-        logits_actions = full_logits[..., :self.act_vocab_size]  # TODO split logits to create another OutputClass #1done
+        logits_actions = full_logits[...,
+                         :self.act_vocab_size]  # TODO split logits to create another OutputClass #1done
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
         means_values = rearrange(self.critic_linear(self.hx), 'b 1 -> b 1 1')
@@ -132,12 +155,12 @@ class ActorCritic(nn.Module):
         d = Categorical(logits=outputs.logits_actions[:, :-1])  # TODO accept new OutputClass #1done
         log_probs = d.log_prob(outputs.actions[:, :-1])  # TODO #1done
         loss_actions = -1 * (
-                    log_probs * (lambda_returns - values.detach())).mean()  # TODO define loss for continuous actions #1done
+                log_probs * (lambda_returns - values.detach())).mean()  # TODO define loss for continuous actions #1done
 
-        cont = Normal(outputs.continuous_means[:,:-1], outputs.continuous_stds[:,:-1])
-        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:,:-1])
+        cont = Normal(outputs.continuous_means[:, :-1], outputs.continuous_stds[:, :-1])
+        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1])
         loss_continuous_actions = -1 * (
-                    log_probs_continuous * (lambda_returns - values.detach())).mean()
+                log_probs_continuous * (lambda_returns - values.detach())).mean()
 
         loss_entropy = - entropy_weight * d.entropy().mean()
         loss_entropy_continuous = - entropy_weight * cont.entropy().mean()
@@ -154,7 +177,7 @@ class ActorCritic(nn.Module):
         assert not self.use_original_obs
         initial_observations = batch['observations']
         mask_padding = batch['mask_padding']
-        assert initial_observations.ndim == 5 and initial_observations.shape[2:] == (3, 64, 64)
+        assert initial_observations.ndim == 5  # and initial_observations.shape[2:] == (3, 64, 64)
         assert mask_padding[:, -1].all()
         device = initial_observations.device
         wm_env = WorldModelEnv(tokenizer, world_model, device)
@@ -209,3 +232,20 @@ class ActorCritic(nn.Module):
             rewards=torch.cat(all_rewards, dim=1).to(device),  # (B, T)
             ends=torch.cat(all_ends, dim=1).to(device),  # (B, T)
         )
+
+
+if __name__ == "__main__":
+    import time
+
+
+    def print_time(func, *args, **kwargs):
+        start = time.time()
+        func(*args, **kwargs)
+        print(time.time() - start)
+
+
+    actor = ActorCritic(1024, 3)
+    actor.reset(1)
+
+    img = torch.normal(0, 1, size=(1, 3, 256, 256)).clip(0, 1)
+    print_time(actor, img)

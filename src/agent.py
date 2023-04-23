@@ -5,10 +5,10 @@ import torch
 from torch.distributions.categorical import Categorical
 from torch.distributions.normal import Normal
 import torch.nn as nn
+import torch.nn.functional as F
 
-from models.actor_critic import ActorCritic
-from models.tokenizer import Tokenizer
-from models.world_model import WorldModel
+from src.models.tokenizer import Tokenizer
+from src.models.world_model import WorldModel
 from src.models.actor_critic import ActorCritic
 from src.utils import extract_state_dict
 
@@ -24,7 +24,7 @@ class Agent(nn.Module):
 
     @property
     def device(self):
-        return self.actor_critic.conv1.weight.device
+        return self.actor_critic.device
 
     def load(self, path_to_checkpoint: Path, device: torch.device, load_tokenizer: bool = True,
              load_world_model: bool = True, load_actor_critic: bool = True) -> None:
@@ -44,5 +44,6 @@ class Agent(nn.Module):
         act_token = Categorical(logits=logits_actions).sample(
             sample_shape=(1,)) if should_sample else logits_actions.argmax(dim=-1)
         mean_continuous, std_continuous = out.mean_continuous, out.std_continuous
-        act_continuous = torch.sigmoid(Normal(mean_continuous, std_continuous).rsample())
+        std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
+        act_continuous = F.sigmoid(Normal(mean_continuous, std_continuous).rsample())
         return act_token, act_continuous  # TODO add sigmoid on the logits split #1done

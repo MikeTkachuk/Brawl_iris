@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from episode import Episode
+from src.episode import Episode
 
 
 def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_names):

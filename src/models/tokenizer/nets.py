@@ -30,13 +30,22 @@ class Encoder(nn.Module):
         temb_ch = 0  # timestep embedding #channels
 
         # downsampling
-        self.conv_in = torch.nn.Conv2d(config.in_channels,
-                                       config.ch,
-                                       kernel_size=3,
-                                       stride=1,
-                                       padding=1)
+        self.conv_in = torch.nn.Sequential(
+            torch.nn.Conv2d(
+                config.in_channels,
+                config.ch//2,
+                kernel_size=7,
+                stride=1,
+                padding=3),
+            torch.nn.Conv2d(
+                config.ch//2,
+                config.ch,
+                kernel_size=7,
+                stride=2,
+                padding=3),
+        )
 
-        curr_res = config.resolution
+        curr_res = config.resolution // 2  # because of conv_in downsample
         in_ch_mult = (1,) + tuple(config.ch_mult)
         self.down = nn.ModuleList()
         for i_level in range(self.num_resolutions):
@@ -51,6 +60,7 @@ class Encoder(nn.Module):
                                          dropout=config.dropout))
                 block_in = block_out
                 if curr_res in config.attn_resolutions:
+                    print(f'nets.Encoder: added attention block at {curr_res}')
                     attn.append(AttnBlock(block_in))
             down = nn.Module()
             down.block = block
@@ -118,8 +128,8 @@ class Decoder(nn.Module):
         # compute in_ch_mult, block_in and curr_res at lowest res
         in_ch_mult = (1,) + tuple(config.ch_mult)
         block_in = config.ch * config.ch_mult[self.num_resolutions - 1]
-        curr_res = config.resolution // 2 ** (self.num_resolutions - 1)
-        print(f"Tokenizer : shape of latent is {config.z_channels, curr_res, curr_res}.")
+        curr_res = config.resolution // 2 ** (self.num_resolutions - 1 + 1)  # + 1 because added standalone downsample in conv_in
+        print(f"nets.Decoder: shape of latent is {config.z_channels, curr_res, curr_res}.")
 
         # z to block_in
         self.conv_in = torch.nn.Conv2d(config.z_channels,
@@ -164,11 +174,20 @@ class Decoder(nn.Module):
 
         # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(block_in,
-                                        config.out_ch,
-                                        kernel_size=3,
-                                        stride=1,
-                                        padding=1)
+        self.conv_out = torch.nn.Sequential(
+            torch.nn.ConvTranspose2d(block_in,
+                                     config.ch//4,
+                                     kernel_size=7,
+                                     stride=2,
+                                     padding=3),
+            torch.nn.Conv2d(config.ch//4,
+                            config.out_ch,
+                            kernel_size=3,
+                            stride=1,
+                            padding=2)
+        )
+
+        print(f"nets.Decoder: {self(torch.zeros(1, 512, 8, 8)).shape}")
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         temb = None  # timestep embedding

@@ -1,28 +1,29 @@
+import os
+import shutil
+import sys
+import time
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
-import shutil
-import sys
-import os
-import time
 from typing import Any, Dict, Optional, Tuple
 
-import hydra
-from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.nn as nn
-from tqdm import tqdm
 import wandb
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
+from tqdm import tqdm
 
-from agent import Agent
-from collector import Collector
-from envs import SingleProcessEnv, MultiProcessEnv
-from episode import Episode
-from make_reconstructions import make_reconstructions_from_batch
-from models.actor_critic import ActorCritic
-from models.world_model import WorldModel
+from src.agent import Agent
+from src.collector import Collector
+from src.envs import SingleProcessEnv, MultiProcessEnv
+from src.episode import Episode
+from src.make_reconstructions import make_reconstructions_from_batch
+from src.models.actor_critic import ActorCritic
+from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
+
+import boto3
 
 
 # TODO rewards adjust (currently -1 0 1)
@@ -90,7 +91,8 @@ class Trainer:
         world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=env.num_actions,
                                  act_continuous_size=env.num_continuous,
                                  config=instantiate(cfg.world_model))  # TODO add continuous #1done
-        actor_critic = ActorCritic(**cfg.actor_critic, act_vocab_size=env.num_actions, act_continuous_size=env.num_continuous)
+        actor_critic = ActorCritic(**cfg.actor_critic, act_vocab_size=env.num_actions,
+                                   act_continuous_size=env.num_continuous)
         self.agent = Agent(tokenizer, world_model, actor_critic).to(self.device)
         print(f'{sum(p.numel() for p in self.agent.tokenizer.parameters())} parameters in agent.tokenizer')
         print(f'{sum(p.numel() for p in self.agent.world_model.parameters())} parameters in agent.world_model')
@@ -119,7 +121,11 @@ class Trainer:
             if self.cfg.training.should:
                 if epoch <= self.cfg.collection.train.stop_after_epochs:
                     to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
-                to_log += self.train_agent(epoch)
+
+                if self.cfg.training.on_cloud:
+                    to_log += self.train_agent_cloud(epoch)
+                else:
+                    to_log += self.train_agent(epoch)
 
             if self.cfg.evaluation.should and (epoch % self.cfg.evaluation.every == 0):
                 self.test_dataset.clear()
@@ -135,7 +141,53 @@ class Trainer:
 
         self.finish()
 
-    def train_agent(self, epoch: int) -> None:
+    def train_agent_cloud(self, epoch: int):
+        """
+        Uploads checkpoints to storage, launches optimization jobs on cloud,
+        waits for the jobs to finish, downloads the results and resumes run.
+        :param epoch:
+        :return:
+        """
+        metrics_tokenizer, metrics_world_model, metrics_actor_critic = {}, {}, {}
+
+        cfg_tokenizer = self.cfg.training.tokenizer
+        cfg_world_model = self.cfg.training.world_model
+        cfg_actor_critic = self.cfg.training.actor_critic
+
+        # upload checkpoints and run jobs if any is ready to be optimized
+        if any([
+            epoch > cfg_tokenizer.start_after_epochs,
+            epoch > cfg_world_model.start_after_epochs,
+            epoch > cfg_actor_critic.start_after_epochs
+        ]):
+
+            # upload new and delete old episodes
+            run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).name, Path(os.getcwd()).parent.name]))
+            s3_client = boto3.client(
+                's3'
+            )
+            self.save_checkpoint(epoch, save_agent_only=False)
+
+            # delete old episodes on cloud
+            cloud_list = s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
+                                                   Prefix=str(run_prefix / 'dataset').replace('\\', '/'))
+            cloud_list = set(f['Key'] for f in cloud_list.get('Contents', []))
+            local_list = set(str(p) for p in (self.ckpt_dir / 'dataset').iterdir())
+            for file in cloud_list.difference(local_list):
+                s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
+                                        Key=str(run_prefix / 'dataset' / file).replace('\\', '/'))
+
+            # upload full checkpoint
+            for file in self.ckpt_dir.rglob('*'):
+                if file.is_dir():
+                    continue
+                name_on_bucket = str(run_prefix / file.relative_to(self.ckpt_dir)).replace('\\', '/')
+                s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
+
+            #raise Exception
+        return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]
+
+    def train_agent(self, epoch: int):
         self.agent.train()
         self.agent.zero_grad()
 
@@ -231,7 +283,7 @@ class Trainer:
 
     @torch.no_grad()
     def eval_component(self, component: nn.Module, batch_num_samples: int, sequence_length: int, **kwargs_loss: Any) -> \
-    Dict[str, float]:
+            Dict[str, float]:
         loss_total_epoch = 0.0
         intermediate_losses = defaultdict(float)
 
@@ -263,9 +315,11 @@ class Trainer:
                                                   horizon=self.cfg.evaluation.actor_critic.horizon, show_pbar=True)
 
         to_log = []
-        for i, (o, a, r, d) in enumerate(zip(outputs.observations.cpu(), outputs.actions.cpu(), outputs.rewards.cpu(),
-                                             outputs.ends.long().cpu())):  # Make everything (N, T, ...) instead of (T, N, ...)
-            episode = Episode(o, a, r, d, torch.ones_like(d))
+        for i, (o, a, ac, r, d) in enumerate(
+                zip(outputs.observations.cpu(), outputs.actions.cpu(), outputs.actions_continuous.cpu(),
+                    outputs.rewards.cpu(),
+                    outputs.ends.long().cpu())):  # Make everything (N, T, ...) instead of (T, N, ...)
+            episode = Episode(o, a, ac, r, d, torch.ones_like(d))  # TODO #1done
             episode_id = (epoch - 1 - self.cfg.training.actor_critic.start_after_epochs) * outputs.observations.size(
                 0) + i
             self.episode_manager_imagination.save(episode, episode_id, epoch)
@@ -318,3 +372,39 @@ class Trainer:
 
     def finish(self) -> None:
         wandb.finish()
+
+
+def train_independent_component(component_checkpoint: str,
+                                optimizer_checkpoint: str,
+                                train_dataset_path: str,
+                                steps_per_epoch: int,
+                                batch_num_samples: int, grad_acc_steps: int, max_grad_norm: Optional[float],
+                                sequence_length: int, sampling_weights: Optional[Tuple[float]], sample_from_start: bool,
+                                **kwargs_loss: Any) -> Dict[str, float]:
+    """Primary function to be executed on cloud"""
+
+    loss_total_epoch = 0.0
+    intermediate_losses = defaultdict(float)
+
+    for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout):
+        optimizer.zero_grad()
+        for _ in range(grad_acc_steps):
+            batch = train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
+                                               sample_from_start)
+            batch = self._to_device(batch)
+
+            losses = component.compute_loss(batch, **kwargs_loss) / grad_acc_steps
+            loss_total_step = losses.loss_total
+            loss_total_step.backward()
+            loss_total_epoch += loss_total_step.item() / steps_per_epoch
+
+            for loss_name, loss_value in losses.intermediate_losses.items():
+                intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
+
+        if max_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
+
+        optimizer.step()
+
+    metrics = {f'{str(component)}/train/total_loss': loss_total_epoch, **intermediate_losses}
+    return metrics

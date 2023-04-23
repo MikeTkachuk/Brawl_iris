@@ -8,10 +8,10 @@ import torch
 from tqdm import tqdm
 import wandb
 
-from agent import Agent
-from dataset import EpisodesDataset
-from envs import SingleProcessEnv, MultiProcessEnv
-from episode import Episode
+from src.agent import Agent
+from src.dataset import EpisodesDataset
+from src.envs import SingleProcessEnv, MultiProcessEnv
+from src.episode import Episode
 from src.utils import EpisodeDirManager, RandomHeuristic
 
 
@@ -50,19 +50,26 @@ class Collector:
         agent.actor_critic.reset(n=self.env.num_envs, burnin_observations=burnin_obs_rec, mask_padding=mask_padding)
         pbar = tqdm(total=num_steps if num_steps is not None else num_episodes, desc=f'Experience collection ({self.dataset.name})', file=sys.stdout)
 
+        import time
         while not should_stop(steps, episodes):
-
             observations.append(self.obs)
+
             obs = rearrange(torch.FloatTensor(self.obs).div(255), 'n h w c -> n c h w').to(agent.device)
+
+            start = time.time()
             act, act_cont = agent.act(obs, should_sample=should_sample, temperature=temperature)
+            print("collector.Collector: agent.act", time.time() - start)
+            # observations.append(self.obs)
+            # obs = rearrange(torch.FloatTensor(self.obs).div(255), 'n h w c -> n c h w').to(agent.device)
+            # act, act_cont = agent.act(obs, should_sample=should_sample, temperature=temperature)
 
             if random.random() < epsilon:
                 act, act_cont = self.heuristic.act(obs)
 
-            act = act.cpu().numpy()
-            act_cont = act_cont.cpu().numpy()
+            act = act.cpu().numpy().reshape(-1, 1)
+            act_cont = act_cont.cpu().numpy().reshape(-1, self.env.num_continuous)
 
-            self.obs, reward, done, _ = self.env.step(np.concatenate([act[:, None], act_cont], axis=1))  # TODO continuous step #1done
+            self.obs, reward, done, _ = self.env.step(np.concatenate([act, act_cont], axis=1))  # TODO continuous step #1done
 
             actions.append(act)  # TODO store continuous #1done
             actions_continuous.append(act_cont)
@@ -89,14 +96,16 @@ class Collector:
                     self.episode_dir_manager.save(episode, episode_id, epoch)
                     metrics_episode = {k: v for k, v in episode.compute_metrics().__dict__.items()}
                     metrics_episode['episode_num'] = episode_id
-                    metrics_episode['action_histogram'] = wandb.Histogram(np_histogram=np.histogram(episode.actions.numpy(), bins=np.arange(0, self.env.num_actions + 1) - 0.5, density=True))
+                    metrics_episode['action_histogram'] = wandb.Histogram(np_histogram=np.histogram(episode.actions.numpy(), bins=np.arange(0, min(512,self.env.num_actions + 1)) - 0.5, density=True))
                     to_log.append({f'{self.dataset.name}/{k}': v for k, v in metrics_episode.items()})
                     returns.append(metrics_episode['episode_return'])
 
                 self.obs = self.env.reset()
                 self.episode_ids = [None] * self.env.num_envs
                 agent.actor_critic.reset(n=self.env.num_envs)
-                observations, actions, rewards, dones = [], [], [], []
+                observations, actions, actions_continuous, rewards, dones = [], [], [], [], []
+        else:
+            self.env.env.__exit__()
 
         # Add incomplete episodes to dataset, and complete them later.
         if len(observations) > 0:
@@ -117,7 +126,8 @@ class Collector:
 
     def add_experience_to_dataset(self, observations: List[np.ndarray], actions: List[np.ndarray],
                                   actions_continuous: List[np.ndarray], rewards: List[np.ndarray], dones: List[np.ndarray]) -> None:
-        assert len(observations) == len(actions) == len(rewards) == len(dones)
+        print([np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
+        assert len(observations) == len(actions) == len(actions_continuous) == len(rewards) == len(dones)
         for i, (o, a, ac, r, d) in enumerate(zip(*map(lambda arr: np.swapaxes(arr, 0, 1), [observations, actions, actions_continuous, rewards, dones]))):  # Make everything (N, T, ...) instead of (T, N, ...)
             episode = Episode(
                 observations=torch.ByteTensor(o).permute(0, 3, 1, 2).contiguous(),  # channel-first

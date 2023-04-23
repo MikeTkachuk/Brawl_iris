@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import psutil
 import torch
 
-from episode import Episode
+from src.episode import Episode
 
 Batch = Dict[str, torch.Tensor]
 
@@ -29,9 +29,13 @@ class EpisodesDataset:
         self.episode_id_to_queue_idx = dict()
 
     def add_episode(self, episode: Episode) -> int:
+        print('dataset.Dataset.add_episode: ADD DATASET LOGGING')
+        print(len(self.episodes), self.max_num_episodes)
         if self.max_num_episodes is not None and len(self.episodes) == self.max_num_episodes:
             self._popleft()
         episode_id = self._append_new_episode(episode)
+        print('dataset.Dataset.add_episode: AFTER ADD DATASET LOGGING')
+        print(self.newly_deleted_episodes)
         return episode_id
 
     def get_episode(self, episode_id: int) -> Episode:
@@ -112,6 +116,7 @@ class EpisodesDataset:
 
     def update_disk_checkpoint(self, directory: Path) -> None:
         assert directory.is_dir()
+
         for episode_id in self.newly_modified_episodes:
             episode = self.get_episode(episode_id)
             episode.save(directory / f'{episode_id}.pt')
