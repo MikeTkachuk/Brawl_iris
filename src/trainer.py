@@ -110,6 +110,10 @@ class Trainer:
         if cfg.common.resume:
             self.load_checkpoint()
 
+    def benchmark(self):
+        for i in range(20):
+            self.train_collector.collect(self.agent, i, **self.cfg.collection.train.config)
+
     def run(self) -> None:
 
         for epoch in range(self.start_epoch, 1 + self.cfg.common.epochs):

@@ -9,8 +9,8 @@ encoder:
     resolution: 256
     in_channels: 3
     z_channels: 512
-    ch: 64
-    ch_mult: [1, 1, 2, 2, 3]
+    ch: 32
+    ch_mult: [2, 2, 3, 4, 5]
     num_res_blocks: 2
     attn_resolutions: [8, 16]
     out_ch: 3

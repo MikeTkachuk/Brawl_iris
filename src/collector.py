@@ -16,23 +16,27 @@ from src.utils import EpisodeDirManager, RandomHeuristic
 
 
 class Collector:
-    def __init__(self, env: Union[SingleProcessEnv, MultiProcessEnv], dataset: EpisodesDataset, episode_dir_manager: EpisodeDirManager) -> None:
+    def __init__(self, env: Union[SingleProcessEnv, MultiProcessEnv], dataset: EpisodesDataset,
+                 episode_dir_manager: EpisodeDirManager) -> None:
         self.env = env
         self.dataset = dataset
         self.episode_dir_manager = episode_dir_manager
-        self.obs = self.env.reset()
+        self.obs = None
         self.episode_ids = [None] * self.env.num_envs
-        self.heuristic = RandomHeuristic(self.env.num_actions, self.env.num_continuous)  # TODO add random continuous heuristic #1done
+        self.heuristic = RandomHeuristic(self.env.num_actions,
+                                         self.env.num_continuous)  # TODO add random continuous heuristic #1done
 
     @torch.no_grad()
-    def collect(self, agent: Agent, epoch: int, epsilon: float, should_sample: bool, temperature: float, burn_in: int, *, num_steps: Optional[int] = None, num_episodes: Optional[int] = None):
+    def collect(self, agent: Agent, epoch: int, epsilon: float, should_sample: bool, temperature: float, burn_in: int,
+                *, num_steps: Optional[int] = None, num_episodes: Optional[int] = None):
         assert self.env.num_actions == agent.world_model.act_vocab_size
         assert self.env.num_continuous == agent.world_model.act_continuous_size
-        # TODO add continuous assertion
         assert 0 <= epsilon <= 1
 
         assert (num_steps is None) != (num_episodes is None)
         should_stop = lambda steps, episodes: steps >= num_steps if num_steps is not None else episodes >= num_episodes
+        if self.obs is None:
+            self.obs = self.env.reset()
 
         to_log = []
         steps, episodes = 0, 0
@@ -42,13 +46,17 @@ class Collector:
         burnin_obs_rec, mask_padding = None, None
         if set(self.episode_ids) != {None} and burn_in > 0:
             current_episodes = [self.dataset.get_episode(episode_id) for episode_id in self.episode_ids]
-            segmented_episodes = [episode.segment(start=len(episode) - burn_in, stop=len(episode), should_pad=True) for episode in current_episodes]
+            segmented_episodes = [episode.segment(start=len(episode) - burn_in, stop=len(episode), should_pad=True) for
+                                  episode in current_episodes]
             mask_padding = torch.stack([episode.mask_padding for episode in segmented_episodes], dim=0).to(agent.device)
-            burnin_obs = torch.stack([episode.observations for episode in segmented_episodes], dim=0).float().div(255).to(agent.device)
-            burnin_obs_rec = torch.clamp(agent.tokenizer.encode_decode(burnin_obs, should_preprocess=True, should_postprocess=True), 0, 1)
+            burnin_obs = torch.stack([episode.observations for episode in segmented_episodes], dim=0).float().div(
+                255).to(agent.device)
+            burnin_obs_rec = torch.clamp(
+                agent.tokenizer.encode_decode(burnin_obs, should_preprocess=True, should_postprocess=True), 0, 1)
 
         agent.actor_critic.reset(n=self.env.num_envs, burnin_observations=burnin_obs_rec, mask_padding=mask_padding)
-        pbar = tqdm(total=num_steps if num_steps is not None else num_episodes, desc=f'Experience collection ({self.dataset.name})', file=sys.stdout)
+        pbar = tqdm(total=num_steps if num_steps is not None else num_episodes,
+                    desc=f'Experience collection ({self.dataset.name})', file=sys.stdout)
 
         import time
         while not should_stop(steps, episodes):
@@ -69,7 +77,8 @@ class Collector:
             act = act.cpu().numpy().reshape(-1, 1)
             act_cont = act_cont.cpu().numpy().reshape(-1, self.env.num_continuous)
 
-            self.obs, reward, done, _ = self.env.step(np.concatenate([act, act_cont], axis=1))  # TODO continuous step #1done
+            self.obs, reward, done, _ = self.env.step(
+                np.concatenate([act, act_cont], axis=1))  # TODO continuous step #1done
 
             actions.append(act)  # TODO store continuous #1done
             actions_continuous.append(act_cont)
@@ -96,7 +105,10 @@ class Collector:
                     self.episode_dir_manager.save(episode, episode_id, epoch)
                     metrics_episode = {k: v for k, v in episode.compute_metrics().__dict__.items()}
                     metrics_episode['episode_num'] = episode_id
-                    metrics_episode['action_histogram'] = wandb.Histogram(np_histogram=np.histogram(episode.actions.numpy(), bins=np.arange(0, min(512,self.env.num_actions + 1)) - 0.5, density=True))
+                    metrics_episode['action_histogram'] = wandb.Histogram(
+                        np_histogram=np.histogram(episode.actions.numpy(),
+                                                  bins=np.arange(0, min(512, self.env.num_actions + 1)) - 0.5,
+                                                  density=True))
                     to_log.append({f'{self.dataset.name}/{k}': v for k, v in metrics_episode.items()})
                     returns.append(metrics_episode['episode_return'])
 
@@ -125,10 +137,13 @@ class Collector:
         return to_log
 
     def add_experience_to_dataset(self, observations: List[np.ndarray], actions: List[np.ndarray],
-                                  actions_continuous: List[np.ndarray], rewards: List[np.ndarray], dones: List[np.ndarray]) -> None:
+                                  actions_continuous: List[np.ndarray], rewards: List[np.ndarray],
+                                  dones: List[np.ndarray]) -> None:
         print([np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
         assert len(observations) == len(actions) == len(actions_continuous) == len(rewards) == len(dones)
-        for i, (o, a, ac, r, d) in enumerate(zip(*map(lambda arr: np.swapaxes(arr, 0, 1), [observations, actions, actions_continuous, rewards, dones]))):  # Make everything (N, T, ...) instead of (T, N, ...)
+        for i, (o, a, ac, r, d) in enumerate(zip(*map(lambda arr: np.swapaxes(arr, 0, 1),
+                                                      [observations, actions, actions_continuous, rewards,
+                                                       dones]))):  # Make everything (N, T, ...) instead of (T, N, ...)
             episode = Episode(
                 observations=torch.ByteTensor(o).permute(0, 3, 1, 2).contiguous(),  # channel-first
                 actions=torch.LongTensor(a),  # TODO add continuous #1done

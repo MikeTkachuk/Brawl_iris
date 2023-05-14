@@ -6,7 +6,6 @@ from .done_tracker import DoneTrackerEnv
 
 
 class SingleProcessEnv(DoneTrackerEnv):
-    # TODO make compatible with custom env with continuous #1done
     def __init__(self, env_fn):
         super().__init__(num_envs=1)
         self.env = env_fn()
@@ -22,7 +21,6 @@ class SingleProcessEnv(DoneTrackerEnv):
         return obs[None, ...]
 
     def step(self, action) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
-        # TODO expect 1 + self.num_continuous shaped action
         obs, reward, done, _ = self.env.step(action[0])  # action is supposed to be ndarray (1,)
         done = np.array([done])
         self.update_done_tracker(done)

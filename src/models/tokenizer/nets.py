@@ -33,20 +33,20 @@ class Encoder(nn.Module):
         self.conv_in = torch.nn.Sequential(
             torch.nn.Conv2d(
                 config.in_channels,
-                config.ch//2,
+                config.ch,
                 kernel_size=7,
                 stride=1,
                 padding=3),
             torch.nn.Conv2d(
-                config.ch//2,
                 config.ch,
+                config.ch*2,
                 kernel_size=7,
                 stride=2,
                 padding=3),
         )
 
         curr_res = config.resolution // 2  # because of conv_in downsample
-        in_ch_mult = (1,) + tuple(config.ch_mult)
+        in_ch_mult = (2,) + tuple(config.ch_mult)
         self.down = nn.ModuleList()
         for i_level in range(self.num_resolutions):
             block = nn.ModuleList()
@@ -126,7 +126,6 @@ class Decoder(nn.Module):
         self.num_resolutions = len(config.ch_mult)
 
         # compute in_ch_mult, block_in and curr_res at lowest res
-        in_ch_mult = (1,) + tuple(config.ch_mult)
         block_in = config.ch * config.ch_mult[self.num_resolutions - 1]
         curr_res = config.resolution // 2 ** (self.num_resolutions - 1 + 1)  # + 1 because added standalone downsample in conv_in
         print(f"nets.Decoder: shape of latent is {config.z_channels, curr_res, curr_res}.")
@@ -176,11 +175,13 @@ class Decoder(nn.Module):
         self.norm_out = Normalize(block_in)
         self.conv_out = torch.nn.Sequential(
             torch.nn.ConvTranspose2d(block_in,
-                                     config.ch//4,
+                                     config.ch//2,
                                      kernel_size=7,
                                      stride=2,
-                                     padding=3),
-            torch.nn.Conv2d(config.ch//4,
+                                     padding=4,
+                                     output_padding=1
+                                     ),
+            torch.nn.Conv2d(config.ch//2,
                             config.out_ch,
                             kernel_size=3,
                             stride=1,
