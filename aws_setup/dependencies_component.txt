@@ -1,0 +1,33 @@
+name: brawl-stars-env-deps
+description: Creates conda env and installs dependencies.
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: create
+        action: ExecuteBash
+        inputs:
+          commands:
+            - source /home/ec2-user/miniconda3/etc/profile.d/conda.sh
+            - conda create python=3.9 -n brawl_stars_cloud -y
+
+      - name: install
+        action: ExecuteBash
+        inputs:
+          commands:
+            - source /home/ec2-user/miniconda3/etc/profile.d/conda.sh
+            - conda env list
+            - conda activate brawl_stars_cloud
+            - echo path=$PATH
+            - pip install ale-py==0.7.4 einops==0.3.2 gym[accept-rom-license]==0.21.0 hydra-core==1.1.1 opencv-python protobuf==3.20.* psutil==5.8.0 pygame==2.1.2 tqdm==4.62.3 wandb==0.12.7
+
+
+  - name: validate
+    steps:
+      - name: printVersion
+        action: ExecuteBash
+        inputs:
+          commands:
+            - python --version
+

@@ -102,7 +102,7 @@ class Collector:
 
                 for episode_id in self.episode_ids:
                     episode = self.dataset.get_episode(episode_id)
-                    self.episode_dir_manager.save(episode, episode_id, epoch)
+                    self.episode_dir_manager.save(episode, episode_id, epoch)  # only for logging purposes
                     metrics_episode = {k: v for k, v in episode.compute_metrics().__dict__.items()}
                     metrics_episode['episode_num'] = episode_id
                     metrics_episode['action_histogram'] = wandb.Histogram(
@@ -139,7 +139,8 @@ class Collector:
     def add_experience_to_dataset(self, observations: List[np.ndarray], actions: List[np.ndarray],
                                   actions_continuous: List[np.ndarray], rewards: List[np.ndarray],
                                   dones: List[np.ndarray]) -> None:
-        print([np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
+        print("collector.Collector.add_experience_to_dataset: ",
+              [np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
         assert len(observations) == len(actions) == len(actions_continuous) == len(rewards) == len(dones)
         for i, (o, a, ac, r, d) in enumerate(zip(*map(lambda arr: np.swapaxes(arr, 0, 1),
                                                       [observations, actions, actions_continuous, rewards,
