@@ -188,7 +188,14 @@ class Trainer:
                 name_on_bucket = str(run_prefix / file.relative_to(self.ckpt_dir)).replace('\\', '/')
                 s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
 
-            #raise Exception
+            # start job
+
+            # wait for it to end running
+
+            # download checkpoint and metrics
+
+            # load checkpoint locally
+
         return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]
 
     def train_agent(self, epoch: int):
@@ -378,7 +385,7 @@ class Trainer:
         wandb.finish()
 
 
-def train_independent_component(component_checkpoint: str,
+def train_independent_component(checkpoint: str,
                                 optimizer_checkpoint: str,
                                 train_dataset_path: str,
                                 steps_per_epoch: int,
@@ -386,6 +393,8 @@ def train_independent_component(component_checkpoint: str,
                                 sequence_length: int, sampling_weights: Optional[Tuple[float]], sample_from_start: bool,
                                 **kwargs_loss: Any) -> Dict[str, float]:
     """Primary function to be executed on cloud"""
+
+    component = torch.load(checkpoint)
 
     loss_total_epoch = 0.0
     intermediate_losses = defaultdict(float)

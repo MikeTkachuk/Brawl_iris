@@ -59,5 +59,6 @@ class Embedder(nn.Module):
             if i == self.action_table_id and len(s) and continuous:
                 assert continuous.shape[2] == self.continuous_size  # continuous is (B, actions, size)
                 assert continuous.shape[1] == len(s)
+                # fill last slots of embeddings with continuous values
                 output[:, s, self.embedding_dim-self.continuous_size:] = continuous
         return output
