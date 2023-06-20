@@ -1,9 +1,10 @@
 Quick guide to setup aws services for this repo
 
+0) AWS CLI should be installed and configured to run this repo
 
 ### S3
 1) Create a bucket
-2) Make an IAM instance role with read/write/delete permissions in this bucket
+2) Make an IAM instance role with read/write/delete permissions in this bucket. Make trust region ec2.
 
 ### EC2
 3) Request quota increase for g4dn.xlarge instances (0 by default)
@@ -15,7 +16,7 @@ Quick guide to setup aws services for this repo
 8) `$ conda env list` (brawl_stars_cloud should be on the list)
 9) `$ conda activate brawl_stars_cloud`  
    `$ python --version`  
-   `3.8.2`  
+   `3.9.*(16)`  
    `$ python`  
    `>>> import torch; torch.cuda.is_available()`  
    `True`
