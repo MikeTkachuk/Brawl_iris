@@ -54,6 +54,7 @@ class EpisodesDataset:
         id_to_delete = [k for k, v in self.episode_id_to_queue_idx.items() if v == 0]
         assert len(id_to_delete) == 1
         self.newly_deleted_episodes.add(id_to_delete[0])
+        self.newly_modified_episodes.discard(id_to_delete[0])  # in case an episode is created and deleted in one epoch
         self.episode_id_to_queue_idx = {k: v - 1 for k, v in self.episode_id_to_queue_idx.items() if v > 0}
         return self.episodes.popleft()
 
@@ -116,16 +117,30 @@ class EpisodesDataset:
 
     def update_disk_checkpoint(self, directory: Path) -> None:
         assert directory.is_dir()
+        print(f'dataset.Dataset.update_disk_checkpoint: map: {self.episode_id_to_queue_idx}'
+              f' n_mod: {self.newly_modified_episodes} n_del: {self.newly_deleted_episodes}')
 
         for episode_id in self.newly_modified_episodes:
             episode = self.get_episode(episode_id)
-            episode.save(directory / f'{episode_id}.pt')
+            episode_path = directory / f'{episode_id}.pt'
+            episode.save(episode_path)
         for episode_id in self.newly_deleted_episodes:
-            (directory / f'{episode_id}.pt').unlink()
+            episode_path = directory / f'{episode_id}.pt'
+            episode_path.unlink()
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
 
+    def get_file_changes(self, directory: Path):
+        updated_files, deleted_files = [], []
+        for episode_id in self.newly_modified_episodes:
+            episode_path = directory / f'{episode_id}.pt'
+            updated_files.append(episode_path)
+        for episode_id in self.newly_deleted_episodes:
+            episode_path = directory / f'{episode_id}.pt'
+            deleted_files.append(episode_path)
+        return updated_files, deleted_files
+
     def load_disk_checkpoint(self, directory: Path) -> None:
-        assert directory.is_dir() and len(self.episodes) == 0
+        assert directory.is_dir() and len(self.episodes) == 0  # TODO check dataset lifecycle
         episode_ids = sorted([int(p.stem) for p in directory.iterdir()])
         self.num_seen_episodes = episode_ids[-1] + 1
         for episode_id in episode_ids:

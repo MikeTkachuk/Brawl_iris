@@ -6,6 +6,8 @@ defaults:
   - env: default
   - datasets: default
 
+env_actions: '{"num_actions": 1024, "num_continuous": 3}'  # module train_cloud argparse workaround
+
 wandb:
   mode: online
   project: iris
@@ -38,7 +40,7 @@ collection:
       epsilon: 0.01  # random move proba
       should_sample: True
       temperature: 1.0
-      num_steps: 200
+      num_steps: 25 #200
       burn_in: ${training.actor_critic.burn_in}
   test:
     num_envs: 1
@@ -51,7 +53,10 @@ collection:
       burn_in: ${training.actor_critic.burn_in}
 
 cloud:
-  bucket_name: brawl-stars-iris
+  region_name: "us-east-1"
+  bucket_name: "brawl-stars-iris"
+  instance_id: "i-0e9cb879b7a6f87c7"
+  key_file: "C:\\Users\\Mykhailo_Tkachuk\\keypair1.pem"
 
 training:
   should: True

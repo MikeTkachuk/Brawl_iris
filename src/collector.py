@@ -119,9 +119,11 @@ class Collector:
         else:
             self.env.env.__exit__()
 
-        # Add incomplete episodes to dataset, and complete them later.
+        # We do not complete unfinished episodes later because the env is real-time.
         if len(observations) > 0:
             self.add_experience_to_dataset(observations, actions, actions_continuous, rewards, dones)
+        self.episode_ids = [None] * self.env.num_envs
+        self.obs = None
 
         agent.actor_critic.clear()
 
@@ -156,4 +158,5 @@ class Collector:
             if self.episode_ids[i] is None:
                 self.episode_ids[i] = self.dataset.add_episode(episode)
             else:
-                self.dataset.update_episode(self.episode_ids[i], episode)
+                raise RuntimeError("Episode updates are not supported")
+                # self.dataset.update_episode(self.episode_ids[i], episode)  # not used
