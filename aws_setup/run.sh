@@ -1,3 +1,4 @@
+cd ~
 eval "$(conda shell.bash hook)"
 conda activate brawl_stars_cloud
 cd Brawl_iris

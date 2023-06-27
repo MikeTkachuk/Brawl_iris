@@ -44,6 +44,5 @@ class Agent(nn.Module):
         act_token = Categorical(logits=logits_actions).sample(
             sample_shape=(1,)) if should_sample else logits_actions.argmax(dim=-1)
         mean_continuous, std_continuous = out.mean_continuous, out.std_continuous
-        std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
         act_continuous = F.sigmoid(Normal(mean_continuous, std_continuous).rsample())
         return act_token, act_continuous  # TODO add sigmoid on the logits split #1done

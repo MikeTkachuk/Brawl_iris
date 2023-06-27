@@ -218,6 +218,7 @@ class Trainer:
             # start job
             with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
                 instance.connect(self.cfg.cloud.key_file)
+                time.sleep(5)  # prevents unfinished initializations
                 instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{run_prefix}\" ~ "
                                       f"--recursive "
                                       f"--quiet")

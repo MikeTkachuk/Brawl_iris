@@ -51,13 +51,12 @@ class Embedder(nn.Module):
     def forward(self, tokens: torch.Tensor, num_steps: int, prev_steps: int, continuous: torch.Tensor = None) -> torch.Tensor:
         assert tokens.ndim == 2  # x is (B, T)
         output = torch.zeros(*tokens.size(), self.embedding_dim, device=tokens.device)
-        if continuous is not None:
-            assert self.continuous_size == continuous.shape[1]
+
         for i, (slicer, emb) in enumerate(zip(self.slicers, self.embedding_tables)):
             s = slicer.compute_slice(num_steps, prev_steps)
             output[:, s] = emb(tokens[:, s])
-            if i == self.action_table_id and len(s) and continuous:
-                assert continuous.shape[2] == self.continuous_size  # continuous is (B, actions, size)
+            if i == self.action_table_id and len(s) and continuous is not None:
+                assert continuous.shape[2] == self.continuous_size  # continuous is (B, size, actions)
                 assert continuous.shape[1] == len(s)
                 # fill last slots of embeddings with continuous values
                 output[:, s, self.embedding_dim-self.continuous_size:] = continuous

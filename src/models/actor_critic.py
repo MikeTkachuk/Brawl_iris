@@ -57,7 +57,6 @@ class Backbone(nn.Module):
         self.maxp6 = nn.MaxPool2d(2, 2)
 
     def forward(self, x):
-        return torch.zeros(size=(x.shape[0], 256))
         x = F.relu(self.maxp1(self.conv1(x)))
         x = F.relu(self.maxp2(self.conv2(x)))
         x = F.relu(self.maxp3(self.conv3(x)))
@@ -75,7 +74,7 @@ class ActorCritic(nn.Module):
 
         self.backbone = Backbone()
         self.lstm_dim = 256
-        self.lstm = nn.LSTMCell(256, self.lstm_dim)
+        self.lstm = nn.LSTMCell(1024, self.lstm_dim)
         self.hx, self.cx = None, None
 
         self.act_vocab_size = act_vocab_size
@@ -132,6 +131,7 @@ class ActorCritic(nn.Module):
                          :self.act_vocab_size]  # TODO split logits to create another OutputClass #1done
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
+        std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
         means_values = rearrange(self.critic_linear(self.hx), 'b 1 -> b 1 1')
 
         return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
@@ -205,7 +205,8 @@ class ActorCritic(nn.Module):
             outputs_ac = self(obs)
             action_token = Categorical(
                 logits=outputs_ac.logits_actions).sample()  # TODO add continuous (from new OutputClass) #1done
-            action_continuous = Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample()
+
+            action_continuous = F.sigmoid(Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample())
             obs, reward, done, _ = wm_env.step(action_token,
                                                continuous=action_continuous,
                                                should_predict_next_obs=(k < horizon - 1))  # TODO add continuous #1done

@@ -33,7 +33,7 @@ class WorldModel(nn.Module):
 
         all_but_last_obs_tokens_pattern = torch.ones(config.tokens_per_block)
         all_but_last_obs_tokens_pattern[-2] = 0
-        act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+        act_tokens_pattern = torch.zeros(config.tokens_per_block)
         act_tokens_pattern[-1] = 1
         obs_tokens_pattern = 1 - act_tokens_pattern
 
@@ -104,7 +104,7 @@ class WorldModel(nn.Module):
         with torch.no_grad():
             obs_tokens = tokenizer.encode(batch['observations'], should_preprocess=True).tokens  # (BL, K)
 
-        act_tokens = rearrange(batch['actions'], 'b l -> b l 1')  # TODO check for continuous #1done
+        act_tokens = batch['actions']  # rearrange(batch['actions'], 'b l -> b l 1')  # TODO check for continuous #1done
         act_continuous = batch['actions_continuous']
         tokens = rearrange(torch.cat((obs_tokens, act_tokens), dim=2), 'b l k1 -> b (l k1)')  # (B, L(K+1))
 

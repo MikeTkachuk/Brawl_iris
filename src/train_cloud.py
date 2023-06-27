@@ -17,6 +17,10 @@ def main(cfg: DictConfig):
     trainer = Trainer(cfg, cloud_instance=True, env_actions=json.loads(str(cfg.env_actions)))
     trainer.load_checkpoint()
     trainer.start_epoch -= 1  # negates increment in load_checkpoint()
+
+    # train code
+    trainer.train_agent(trainer.start_epoch)
+
     trainer.save_checkpoint(trainer.start_epoch, False)
     shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)
 
