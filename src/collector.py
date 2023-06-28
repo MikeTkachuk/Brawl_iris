@@ -24,7 +24,7 @@ class Collector:
         self.obs = None
         self.episode_ids = [None] * self.env.num_envs
         self.heuristic = RandomHeuristic(self.env.num_actions,
-                                         self.env.num_continuous)  # TODO add random continuous heuristic #1done
+                                         self.env.num_continuous)
 
     @torch.no_grad()
     def collect(self, agent: Agent, epoch: int, epsilon: float, should_sample: bool, temperature: float, burn_in: int,
@@ -78,9 +78,9 @@ class Collector:
             act_cont = act_cont.cpu().numpy().reshape(-1, self.env.num_continuous)
 
             self.obs, reward, done, _ = self.env.step(
-                np.concatenate([act, act_cont], axis=1))  # TODO continuous step #1done
+                np.concatenate([act, act_cont], axis=1))
 
-            actions.append(act)  # TODO store continuous #1done
+            actions.append(act)
             actions_continuous.append(act_cont)
             rewards.append(reward)
             dones.append(done)
@@ -149,7 +149,7 @@ class Collector:
                                                        dones]))):  # Make everything (N, T, ...) instead of (T, N, ...)
             episode = Episode(
                 observations=torch.ByteTensor(o).permute(0, 3, 1, 2).contiguous(),  # channel-first
-                actions=torch.LongTensor(a),  # TODO add continuous #1done
+                actions=torch.LongTensor(a),
                 actions_continuous=torch.FloatTensor(ac),
                 rewards=torch.FloatTensor(r),
                 ends=torch.LongTensor(d),

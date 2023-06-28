@@ -22,3 +22,9 @@ Quick guide to setup aws services for this repo
    `True`
 
 Update instance id in configs to be used in the runs
+
+
+**Useful commands**  
+- ```aws ec2 start-instances --instance-ids "instance id" --region "region"```  
+- ```aws ec2 describe-instances --instance-ids "instance id" --region "region" --query Reservations[*].Instances[*].PublicIpAddress --output text```
+- ```aws ec2 stop-instances --instance-ids "instance id" --region "region"```  

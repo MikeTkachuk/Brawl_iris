@@ -12,7 +12,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: test_aws
+  name: "first_run"
   group: null
   tags: null
   notes: null
@@ -67,7 +67,7 @@ training:
     batch_num_samples: 24 # old 256
     grad_acc_steps: 1
     max_grad_norm: 10.0
-    start_after_epochs: 0 #5
+    start_after_epochs: 5
     steps_per_epoch: 200
   world_model:
     batch_num_samples: 14 # old 64
@@ -77,7 +77,7 @@ training:
     start_after_epochs: 25
     steps_per_epoch: 200
   actor_critic:
-    batch_num_samples: 12 # old 64
+    batch_num_samples: 24 # old 64
     grad_acc_steps: 1
     max_grad_norm: 10.0
     start_after_epochs: 50

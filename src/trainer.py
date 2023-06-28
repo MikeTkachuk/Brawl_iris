@@ -104,7 +104,7 @@ class Trainer:
         tokenizer = instantiate(cfg.tokenizer)
         world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=env.num_actions,
                                  act_continuous_size=env.num_continuous,
-                                 config=instantiate(cfg.world_model))  # TODO add continuous #1done
+                                 config=instantiate(cfg.world_model))
         actor_critic = ActorCritic(**cfg.actor_critic, act_vocab_size=env.num_actions,
                                    act_continuous_size=env.num_continuous)
         self.agent = Agent(tokenizer, world_model, actor_critic).to(self.device)
@@ -236,9 +236,8 @@ class Trainer:
 
             # load checkpoint locally
             self.load_checkpoint(load_dataset=False)
-            print('trainer.train_agent_cloud: Epochs', self.start_epoch, epoch)
 
-        return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]
+        return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]  # TODO save metrics to json
 
     def train_agent(self, epoch: int):
         self.agent.train()
@@ -281,9 +280,10 @@ class Trainer:
         loss_total_epoch = 0.0
         intermediate_losses = defaultdict(float)
 
-        for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout):
+        for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout, mininterval=5):
             optimizer.zero_grad()
             for _ in range(grad_acc_steps):
+                print(flush=True)
                 batch = self.train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
                                                         sample_from_start)
                 batch = self._to_device(batch)
@@ -372,7 +372,7 @@ class Trainer:
                 zip(outputs.observations.cpu(), outputs.actions.cpu(), outputs.actions_continuous.cpu(),
                     outputs.rewards.cpu(),
                     outputs.ends.long().cpu())):  # Make everything (N, T, ...) instead of (T, N, ...)
-            episode = Episode(o, a, ac, r, d, torch.ones_like(d))  # TODO #1done
+            episode = Episode(o, a, ac, r, d, torch.ones_like(d))
             episode_id = (epoch - 1 - self.cfg.training.actor_critic.start_after_epochs) * outputs.observations.size(
                 0) + i
             self.episode_manager_imagination.save(episode, episode_id, epoch)

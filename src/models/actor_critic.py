@@ -68,7 +68,6 @@ class Backbone(nn.Module):
 
 class ActorCritic(nn.Module):
     def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False) -> None:
-        # TODO add act continuous size #1done
         super().__init__()
         self.use_original_obs = use_original_obs
 
@@ -81,7 +80,7 @@ class ActorCritic(nn.Module):
         self.act_continuous_size = act_continuous_size
         self.critic_linear = nn.Linear(self.lstm_dim, 1)
         self.actor_linear = nn.Linear(self.lstm_dim,
-                                      self.act_vocab_size + 2 * self.act_continuous_size)  # TODO add more entries for continuous (2*x) for mean and std #1done
+                                      self.act_vocab_size + 2 * self.act_continuous_size)  # add more entries for continuous (2*x) for mean and std
 
     def __repr__(self) -> str:
         return "actor_critic"
@@ -128,7 +127,7 @@ class ActorCritic(nn.Module):
 
         full_logits = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
         logits_actions = full_logits[...,
-                         :self.act_vocab_size]  # TODO split logits to create another OutputClass #1done
+                         :self.act_vocab_size]
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
         std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
@@ -152,15 +151,15 @@ class ActorCritic(nn.Module):
 
         values = outputs.values[:, :-1]
 
-        d = Categorical(logits=outputs.logits_actions[:, :-1])  # TODO accept new OutputClass #1done
-        log_probs = d.log_prob(outputs.actions[:, :-1])  # TODO #1done
+        d = Categorical(logits=outputs.logits_actions[:, :-1])
+        log_probs = d.log_prob(outputs.actions[:, :-1])
         loss_actions = -1 * (
-                log_probs * (lambda_returns - values.detach())).mean()  # TODO define loss for continuous actions #1done
+                log_probs * (lambda_returns - values.detach())).mean()
 
         cont = Normal(outputs.continuous_means[:, :-1], outputs.continuous_stds[:, :-1])
-        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1])
+        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1]).squeeze(-2)  # (B, T, #act_cont)
         loss_continuous_actions = -1 * (
-                log_probs_continuous * (lambda_returns - values.detach())).mean()
+                log_probs_continuous * (lambda_returns - values.detach()).unsqueeze(-1)).mean()
 
         loss_entropy = - entropy_weight * d.entropy().mean()
         loss_entropy_continuous = - entropy_weight * cont.entropy().mean()
@@ -204,16 +203,16 @@ class ActorCritic(nn.Module):
 
             outputs_ac = self(obs)
             action_token = Categorical(
-                logits=outputs_ac.logits_actions).sample()  # TODO add continuous (from new OutputClass) #1done
+                logits=outputs_ac.logits_actions).sample()
 
             action_continuous = F.sigmoid(Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample())
             obs, reward, done, _ = wm_env.step(action_token,
                                                continuous=action_continuous,
-                                               should_predict_next_obs=(k < horizon - 1))  # TODO add continuous #1done
+                                               should_predict_next_obs=(k < horizon - 1))
 
-            all_actions.append(action_token)  # TODO concat #1done
+            all_actions.append(action_token)
             all_continuous.append(action_continuous)
-            all_logits_actions.append(outputs_ac.logits_actions)  # TODO concat #1done
+            all_logits_actions.append(outputs_ac.logits_actions)
             all_continuous_means.append(outputs_ac.mean_continuous)
             all_continuous_stds.append(outputs_ac.std_continuous)
             all_values.append(outputs_ac.means_values)
@@ -247,6 +246,3 @@ if __name__ == "__main__":
 
     actor = ActorCritic(1024, 3)
     actor.reset(1)
-
-    img = torch.normal(0, 1, size=(1, 3, 256, 256)).clip(0, 1)
-    print_time(actor, img)

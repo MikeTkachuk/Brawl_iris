@@ -14,7 +14,7 @@ class EpisodeMetrics:
 @dataclass
 class Episode:
     observations: torch.ByteTensor
-    actions: torch.LongTensor  # TODO maybe accept continuous #1done
+    actions: torch.LongTensor
     actions_continuous: torch.FloatTensor
     rewards: torch.FloatTensor
     ends: torch.LongTensor
