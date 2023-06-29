@@ -19,7 +19,9 @@ def main(cfg: DictConfig):
     trainer.start_epoch -= 1  # negates increment in load_checkpoint()
 
     # train code
-    trainer.train_agent(trainer.start_epoch)
+    metrics = trainer.train_agent(trainer.start_epoch)
+    with open('/home/ec2-user/checkpoints/metrics.json', 'w') as metrics_file:
+        json.dump(metrics, metrics_file)
 
     trainer.save_checkpoint(trainer.start_epoch, False)
     shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)

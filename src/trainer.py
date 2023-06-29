@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from collections import defaultdict, namedtuple
 from functools import partial
@@ -135,7 +136,7 @@ class Trainer:
             print(f"\nEpoch {epoch} / {self.cfg.common.epochs}\n")
             start_time = time.time()
             to_log = []
-
+            # TODO do collection every 5 epochs, otherwise it is time consuming to pass data around
             if self.cfg.training.should:
                 if epoch <= self.cfg.collection.train.stop_after_epochs:
                     to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
@@ -166,7 +167,22 @@ class Trainer:
         :param epoch:
         :return:
         """
-        metrics_tokenizer, metrics_world_model, metrics_actor_critic = {}, {}, {}
+        # defile idle clicker to keep the game active  # TODO add more interaction (not working now)
+        from controls import idle_click
+
+        def _clicker(_stop_event: threading.Event):
+            while True:
+                idle_click()
+                time.sleep(5)
+                if _stop_event.is_set():
+                    break
+
+        stop_key = threading.Event()
+        idle_clicker = threading.Thread(target=_clicker, args=(stop_key,))
+        idle_clicker.start()
+
+        # start initialization
+        metrics = [{'epoch': epoch}]
 
         cfg_tokenizer = self.cfg.training.tokenizer
         cfg_world_model = self.cfg.training.world_model
@@ -184,6 +200,8 @@ class Trainer:
             s3_client = boto3.client(
                 's3'
             )
+            # TODO not valid if save_to_dick was called. uploads only the latest changed in the latest epoch.
+            #  Need to compare with local copy
             to_upload, to_delete = self.train_dataset.get_file_changes(self.ckpt_dir / 'dataset')
             self.save_checkpoint(epoch, save_agent_only=False)
 
@@ -195,14 +213,17 @@ class Trainer:
             # upload updated episodes and model checkpoints
             if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
                                          Prefix=str(run_prefix / 'checkpoints'))['KeyCount'] < 3:  # only the first time
+                print('Trainer.train_agent_cloud: full checkpoint staged for upload')
                 to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
+            print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
             for file in to_upload:
                 name_on_bucket = str(run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
                 s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
 
             repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/trainer.py
             if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(run_prefix / repo_root.name))['KeyCount'] < 3:  # only the first time
+                                         Prefix=str(run_prefix / repo_root.name))[
+                'KeyCount'] < 3:  # only the first time TODO this check not working
                 print('Trainer.train_agent_cloud: code upload started')
                 # upload code if needed
                 name_on_bucket = str(run_prefix / f'{repo_root.name}').replace('\\', '/')
@@ -219,6 +240,7 @@ class Trainer:
             with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
                 instance.connect(self.cfg.cloud.key_file)
                 time.sleep(5)  # prevents unfinished initializations
+                # TODO clean up code and checkpoints before download (rm checkpoints -r)
                 instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{run_prefix}\" ~ "
                                       f"--recursive "
                                       f"--quiet")
@@ -236,8 +258,15 @@ class Trainer:
 
             # load checkpoint locally
             self.load_checkpoint(load_dataset=False)
+            with open(self.ckpt_dir / 'metrics.json') as metrics_file:
+                metrics = json.load(metrics_file)
+                print(f'Trainer.train_agent_cloud: Received metrics: {metrics}')  # TODO metrics are weird (epoch mismatch etc)
 
-        return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]  # TODO save metrics to json
+        # terminate clicker
+        stop_key.set()
+        idle_clicker.join()
+
+        return metrics
 
     def train_agent(self, epoch: int):
         self.agent.train()
@@ -280,10 +309,11 @@ class Trainer:
         loss_total_epoch = 0.0
         intermediate_losses = defaultdict(float)
 
-        for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout, mininterval=5):
+        for step in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout, mininterval=5):
             optimizer.zero_grad()
             for _ in range(grad_acc_steps):
-                print(flush=True)
+                if step % 20 == 0:
+                    print(flush=True)
                 batch = self.train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
                                                         sample_from_start)
                 batch = self._to_device(batch)
