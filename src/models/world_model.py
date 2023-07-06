@@ -104,7 +104,7 @@ class WorldModel(nn.Module):
         with torch.no_grad():
             obs_tokens = tokenizer.encode(batch['observations'], should_preprocess=True).tokens  # (BL, K)
 
-        act_tokens = batch['actions']  # rearrange(batch['actions'], 'b l -> b l 1')
+        act_tokens = batch['actions']
         act_continuous = batch['actions_continuous']
         tokens = rearrange(torch.cat((obs_tokens, act_tokens), dim=2), 'b l k1 -> b (l k1)')  # (B, L(K+1))
 

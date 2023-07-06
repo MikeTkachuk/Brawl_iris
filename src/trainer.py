@@ -61,10 +61,6 @@ class Trainer:
             config_path = config_dir / 'trainer.yaml'
             config_dir.mkdir(exist_ok=False, parents=False)
             shutil.copy('.hydra/config.yaml', config_path)
-            # shutil.copy(str(config_path), os.path.join(wandb.run.dir, config_dir))
-            # wandb.save(str(config_path))
-            # shutil.copytree(src=(Path(hydra.utils.get_original_cwd()) / "src"), dst="./")
-            # shutil.copytree(src=(Path(hydra.utils.get_original_cwd()) / "scripts"), dst="../scripts")
             self.ckpt_dir.mkdir(exist_ok=True, parents=False)
             self.media_dir.mkdir(exist_ok=False, parents=False)
             self.episode_dir.mkdir(exist_ok=False, parents=False)
@@ -251,12 +247,10 @@ class Trainer:
             with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
                 instance.connect(self.cfg.cloud.key_file)
                 time.sleep(5)  # prevents unfinished initializations
-                instance.exec_command("rm -r Brawl_iris")
-                instance.exec_command("rm -r checkpoints")
+                instance.exec_command("rm -r Brawl_iris checkpoints")
                 instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{run_prefix}\" ~ "
                                       f"--recursive "
                                       f"--quiet")
-                instance.exec_command('ls')
                 env_actions = json.dumps({'num_actions': int(self.train_collector.env.num_actions),
                                           'num_continuous': int(self.train_collector.env.num_continuous)})
                 # TODO (not important) save env_actions in config
@@ -339,7 +333,7 @@ class Trainer:
                     intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
 
                 if step % 20 == 0:
-                    print(f"Total Loss at {step} step: {loss_total_epoch*steps_per_epoch/step}", flush=True)
+                    print(f"Total Loss at step {step}: {loss_total_epoch * steps_per_epoch / (step + 1)}", flush=True)
 
             if max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
