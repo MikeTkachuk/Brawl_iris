@@ -1,0 +1,24 @@
+name: conda-update
+description: Updates Conda.
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: update
+        action: ExecuteBash
+        inputs:
+          commands:
+            - conda update conda -y
+
+
+  - name: validate
+    steps:
+      - name: tryActivate
+        action: ExecuteBash
+        inputs:
+          commands:
+            - eval "$(conda shell.bash hook)"
+            - conda --version
+            - conda activate pytorch
+            - conda deactivate

@@ -1,8 +1,10 @@
+import json
 import os
 import shutil
 import sys
+import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -18,23 +20,27 @@ from src.agent import Agent
 from src.collector import Collector
 from src.envs import SingleProcessEnv, MultiProcessEnv
 from src.episode import Episode
+from src.dataset import EpisodesDataset
 from src.make_reconstructions import make_reconstructions_from_batch
 from src.models.actor_critic import ActorCritic
 from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
+from src.aws import InstanceContext
 
 import boto3
 
 
 # TODO rewards adjust (currently -1 0 1)
 class Trainer:
-    def __init__(self, cfg: DictConfig) -> None:
-        wandb.init(
-            config=OmegaConf.to_container(cfg, resolve=True),
-            reinit=True,
-            resume=True,
-            **cfg.wandb
-        )
+    def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
+        self.cloud_instance = cloud_instance
+        if not self.cloud_instance:
+            wandb.init(
+                config=OmegaConf.to_container(cfg, resolve=True),
+                reinit=True,
+                resume=True,
+                **cfg.wandb
+            )
 
         if cfg.common.seed is not None:
             set_seed(cfg.common.seed)
@@ -42,6 +48,8 @@ class Trainer:
         self.cfg = cfg
         self.start_epoch = 1
         self.device = torch.device(cfg.common.device)
+        if self.cloud_instance:
+            self.device = torch.device('cuda:0')
 
         self.ckpt_dir = Path('checkpoints')
         self.media_dir = Path('media')
@@ -53,11 +61,7 @@ class Trainer:
             config_path = config_dir / 'trainer.yaml'
             config_dir.mkdir(exist_ok=False, parents=False)
             shutil.copy('.hydra/config.yaml', config_path)
-            ###shutil.copy(str(config_path), os.path.join(wandb.run.dir, config_dir))
-            # wandb.save(str(config_path))
-            # shutil.copytree(src=(Path(hydra.utils.get_original_cwd()) / "src"), dst="./")
-            # shutil.copytree(src=(Path(hydra.utils.get_original_cwd()) / "scripts"), dst="../scripts")
-            self.ckpt_dir.mkdir(exist_ok=False, parents=False)
+            self.ckpt_dir.mkdir(exist_ok=True, parents=False)
             self.media_dir.mkdir(exist_ok=False, parents=False)
             self.episode_dir.mkdir(exist_ok=False, parents=False)
             self.reconstructions_dir.mkdir(exist_ok=False, parents=False)
@@ -75,22 +79,29 @@ class Trainer:
                                    should_wait_num_envs_ratio=1.0) if num_envs > 1 else SingleProcessEnv(env_fn)
 
         if self.cfg.training.should:
-            train_env = create_env(cfg.env.train, cfg.collection.train.num_envs)
-            self.train_dataset = instantiate(cfg.datasets.train)
-            self.train_collector = Collector(train_env, self.train_dataset, episode_manager_train)
+            self.train_dataset: EpisodesDataset = instantiate(cfg.datasets.train)
+            if not self.cloud_instance:
+                train_env = create_env(cfg.env.train, cfg.collection.train.num_envs)
+                self.train_collector = Collector(train_env, self.train_dataset, episode_manager_train)
 
         if self.cfg.evaluation.should:
-            test_env = create_env(cfg.env.test, cfg.collection.test.num_envs)
-            self.test_dataset = instantiate(cfg.datasets.test)
-            self.test_collector = Collector(test_env, self.test_dataset, episode_manager_test)
+            self.test_dataset: EpisodesDataset = instantiate(cfg.datasets.test)
+            if not self.cloud_instance:
+                test_env = create_env(cfg.env.test, cfg.collection.test.num_envs)
+                self.test_collector = Collector(test_env, self.test_dataset, episode_manager_test)
 
         assert self.cfg.training.should or self.cfg.evaluation.should
-        env = train_env if self.cfg.training.should else test_env
+        if not self.cloud_instance:
+            env = train_env if self.cfg.training.should else test_env
+        else:
+            # if on cloud, env is only used for num_actions
+            assert isinstance(env_actions, dict)
+            env = namedtuple('Env', ['num_actions', 'num_continuous'])(**env_actions)
 
         tokenizer = instantiate(cfg.tokenizer)
         world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=env.num_actions,
                                  act_continuous_size=env.num_continuous,
-                                 config=instantiate(cfg.world_model))  # TODO add continuous #1done
+                                 config=instantiate(cfg.world_model))
         actor_critic = ActorCritic(**cfg.actor_critic, act_vocab_size=env.num_actions,
                                    act_continuous_size=env.num_continuous)
         self.agent = Agent(tokenizer, world_model, actor_critic).to(self.device)
@@ -121,7 +132,6 @@ class Trainer:
             print(f"\nEpoch {epoch} / {self.cfg.common.epochs}\n")
             start_time = time.time()
             to_log = []
-
             if self.cfg.training.should:
                 if epoch <= self.cfg.collection.train.stop_after_epochs:
                     to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
@@ -152,7 +162,22 @@ class Trainer:
         :param epoch:
         :return:
         """
-        metrics_tokenizer, metrics_world_model, metrics_actor_critic = {}, {}, {}
+        # defile idle clicker to keep the game active
+        from controls import idle_click
+
+        def _clicker(_stop_event: threading.Event):
+            while True:
+                idle_click()
+                time.sleep(5)
+                if _stop_event.is_set():
+                    break
+
+        stop_idle_clicking_key = threading.Event()
+        idle_clicker = threading.Thread(target=_clicker, args=(stop_idle_clicking_key,))
+        idle_clicker.start()
+
+        # start initialization
+        metrics = [{'epoch': epoch}]
 
         cfg_tokenizer = self.cfg.training.tokenizer
         cfg_world_model = self.cfg.training.world_model
@@ -166,30 +191,90 @@ class Trainer:
         ]):
 
             # upload new and delete old episodes
-            run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).name, Path(os.getcwd()).parent.name]))
+            run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
             s3_client = boto3.client(
                 's3'
             )
+
+            to_upload, to_delete = [], []
             self.save_checkpoint(epoch, save_agent_only=False)
+            local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
+            cloud_dataset_response = s3_client.list_objects_v2(
+                Bucket=self.cfg.cloud.bucket_name,
+                Prefix=str(run_prefix / 'checkpoints/dataset').replace('\\', '/')
+            )
+            cloud_dataset_filenames = set(
+                Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
+            to_upload.extend([self.ckpt_dir / 'dataset' / file_name
+                              for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
+            to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
 
             # delete old episodes on cloud
-            cloud_list = s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                                   Prefix=str(run_prefix / 'dataset').replace('\\', '/'))
-            cloud_list = set(f['Key'] for f in cloud_list.get('Contents', []))
-            local_list = set(str(p) for p in (self.ckpt_dir / 'dataset').iterdir())
-            for file in cloud_list.difference(local_list):
+            for file_name in to_delete:
                 s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
-                                        Key=str(run_prefix / 'dataset' / file).replace('\\', '/'))
+                                        Key=str(run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
 
-            # upload full checkpoint
-            for file in self.ckpt_dir.rglob('*'):
-                if file.is_dir():
-                    continue
-                name_on_bucket = str(run_prefix / file.relative_to(self.ckpt_dir)).replace('\\', '/')
+            # upload updated episodes and model checkpoints
+            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
+                                         Prefix=str(run_prefix / 'checkpoints').replace('\\', '/')
+                                         )['KeyCount'] < 3:  # only the first time
+                print('Trainer.train_agent_cloud: full checkpoint staged for upload')
+                to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
+            else:
+                to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
+            print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
+            for file in tqdm(to_upload):
+                name_on_bucket = str(run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
                 s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
 
-            #raise Exception
-        return [{'epoch': epoch, **metrics_tokenizer, **metrics_world_model, **metrics_actor_critic}]
+            repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/trainer.py
+            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
+                                         Prefix=str(run_prefix / repo_root.name).replace('\\', '/')
+                                         )['KeyCount'] < 3:  # only the first time
+                print('Trainer.train_agent_cloud: code upload started')
+                # upload code if needed
+                name_on_bucket = str(run_prefix / f'{repo_root.name}').replace('\\', '/')
+                os.system(f'aws s3 cp {repo_root} s3://{self.cfg.cloud.bucket_name}/{name_on_bucket} '
+                          f'--exclude ".git/*" '
+                          f'--exclude ".idea/*" '
+                          f'--exclude "results/*" '
+                          f'--exclude "assets/*" '
+                          f'--recursive '
+                          f'--quiet')
+                print('Trainer.train_agent_cloud: code upload finished')
+
+            # start job
+            with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
+                instance.connect(self.cfg.cloud.key_file)
+                time.sleep(5)  # prevents unfinished initializations
+                instance.exec_command("rm -r Brawl_iris checkpoints")
+                instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{run_prefix}\" ~ "
+                                      f"--recursive "
+                                      f"--quiet")
+                env_actions = json.dumps({'num_actions': int(self.train_collector.env.num_actions),
+                                          'num_continuous': int(self.train_collector.env.num_continuous)})
+                # TODO (not important) save env_actions in config
+
+                instance.exec_command(f"sh {repo_root.name}/aws_setup/run.sh {run_prefix}")
+
+            # download checkpoint and metrics
+            os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{run_prefix}/checkpoints {self.ckpt_dir} '
+                      f'--exclude "dataset/*" '
+                      f'--recursive')
+
+            # load checkpoint locally
+            self.load_checkpoint(load_dataset=False)
+            with open(self.ckpt_dir / 'metrics.json') as metrics_file:
+                metrics = json.load(metrics_file)
+                metrics[0]['duration_gpu'] = instance.session_time / 3600
+                print(
+                    f'Trainer.train_agent_cloud: Received metrics: {metrics}')
+
+        # terminate clicker
+        stop_idle_clicking_key.set()
+        idle_clicker.join()
+
+        return metrics
 
     def train_agent(self, epoch: int):
         self.agent.train()
@@ -232,7 +317,7 @@ class Trainer:
         loss_total_epoch = 0.0
         intermediate_losses = defaultdict(float)
 
-        for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout):
+        for step in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout, mininterval=5):
             optimizer.zero_grad()
             for _ in range(grad_acc_steps):
                 batch = self.train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
@@ -246,6 +331,9 @@ class Trainer:
 
                 for loss_name, loss_value in losses.intermediate_losses.items():
                     intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
+
+                if step % 20 == 0:
+                    print(f"Total Loss at step {step}: {loss_total_epoch * steps_per_epoch / (step + 1)}", flush=True)
 
             if max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
@@ -323,7 +411,7 @@ class Trainer:
                 zip(outputs.observations.cpu(), outputs.actions.cpu(), outputs.actions_continuous.cpu(),
                     outputs.rewards.cpu(),
                     outputs.ends.long().cpu())):  # Make everything (N, T, ...) instead of (T, N, ...)
-            episode = Episode(o, a, ac, r, d, torch.ones_like(d))  # TODO #1done
+            episode = Episode(o, a, ac, r, d, torch.ones_like(d))
             episode_id = (epoch - 1 - self.cfg.training.actor_critic.start_after_epochs) * outputs.observations.size(
                 0) + i
             self.episode_manager_imagination.save(episode, episode_id, epoch)
@@ -357,7 +445,7 @@ class Trainer:
         self._save_checkpoint(epoch, save_agent_only)
         shutil.rmtree(tmp_checkpoint_dir)
 
-    def load_checkpoint(self) -> None:
+    def load_checkpoint(self, load_dataset=True) -> None:
         assert self.ckpt_dir.is_dir()
         self.start_epoch = torch.load(self.ckpt_dir / 'epoch.pt') + 1
         self.agent.load(self.ckpt_dir / 'last.pt', device=self.device)
@@ -365,7 +453,8 @@ class Trainer:
         self.optimizer_tokenizer.load_state_dict(ckpt_opt['optimizer_tokenizer'])
         self.optimizer_world_model.load_state_dict(ckpt_opt['optimizer_world_model'])
         self.optimizer_actor_critic.load_state_dict(ckpt_opt['optimizer_actor_critic'])
-        self.train_dataset.load_disk_checkpoint(self.ckpt_dir / 'dataset')
+        if load_dataset:
+            self.train_dataset.load_disk_checkpoint(self.ckpt_dir / 'dataset')
         if self.cfg.evaluation.should:
             self.test_dataset.num_seen_episodes = torch.load(self.ckpt_dir / 'num_seen_episodes_test_dataset.pt')
         print(
@@ -376,39 +465,3 @@ class Trainer:
 
     def finish(self) -> None:
         wandb.finish()
-
-
-def train_independent_component(component_checkpoint: str,
-                                optimizer_checkpoint: str,
-                                train_dataset_path: str,
-                                steps_per_epoch: int,
-                                batch_num_samples: int, grad_acc_steps: int, max_grad_norm: Optional[float],
-                                sequence_length: int, sampling_weights: Optional[Tuple[float]], sample_from_start: bool,
-                                **kwargs_loss: Any) -> Dict[str, float]:
-    """Primary function to be executed on cloud"""
-
-    loss_total_epoch = 0.0
-    intermediate_losses = defaultdict(float)
-
-    for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout):
-        optimizer.zero_grad()
-        for _ in range(grad_acc_steps):
-            batch = train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
-                                               sample_from_start)
-            batch = self._to_device(batch)
-
-            losses = component.compute_loss(batch, **kwargs_loss) / grad_acc_steps
-            loss_total_step = losses.loss_total
-            loss_total_step.backward()
-            loss_total_epoch += loss_total_step.item() / steps_per_epoch
-
-            for loss_name, loss_value in losses.intermediate_losses.items():
-                intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
-
-        if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
-
-        optimizer.step()
-
-    metrics = {f'{str(component)}/train/total_loss': loss_total_epoch, **intermediate_losses}
-    return metrics

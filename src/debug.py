@@ -11,7 +11,7 @@ import numpy as np
 def main(cfg):
     world_model = WorldModel(obs_vocab_size=512, act_vocab_size=7,
                                      #act_continuous_size=env.num_continuous,
-                                     config=instantiate(cfg.world_model))  # TODO add continuous
+                                     config=instantiate(cfg.world_model))
     tokenizer = instantiate(cfg.tokenizer)
     wm_env = WorldModelEnv(tokenizer, world_model, 'cpu')
     wm_env.reset_from_initial_observations(torch.distributions.uniform.Uniform(0,1).sample([1,3,64,64]).float())

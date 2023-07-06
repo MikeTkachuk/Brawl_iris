@@ -40,10 +40,9 @@ class Agent(nn.Module):
         input_ac = obs if self.actor_critic.use_original_obs else torch.clamp(
             self.tokenizer.encode_decode(obs, should_preprocess=True, should_postprocess=True), 0, 1)
         out = self.actor_critic(input_ac)
-        logits_actions = out.logits_actions[:, -1] / temperature  # TODO split logits (from updated OutputClass) #1done
+        logits_actions = out.logits_actions[:, -1] / temperature
         act_token = Categorical(logits=logits_actions).sample(
             sample_shape=(1,)) if should_sample else logits_actions.argmax(dim=-1)
         mean_continuous, std_continuous = out.mean_continuous, out.std_continuous
-        std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
         act_continuous = F.sigmoid(Normal(mean_continuous, std_continuous).rsample())
-        return act_token, act_continuous  # TODO add sigmoid on the logits split #1done
+        return act_token, act_continuous

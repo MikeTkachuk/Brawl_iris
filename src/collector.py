@@ -24,7 +24,7 @@ class Collector:
         self.obs = None
         self.episode_ids = [None] * self.env.num_envs
         self.heuristic = RandomHeuristic(self.env.num_actions,
-                                         self.env.num_continuous)  # TODO add random continuous heuristic #1done
+                                         self.env.num_continuous)
 
     @torch.no_grad()
     def collect(self, agent: Agent, epoch: int, epsilon: float, should_sample: bool, temperature: float, burn_in: int,
@@ -78,9 +78,9 @@ class Collector:
             act_cont = act_cont.cpu().numpy().reshape(-1, self.env.num_continuous)
 
             self.obs, reward, done, _ = self.env.step(
-                np.concatenate([act, act_cont], axis=1))  # TODO continuous step #1done
+                np.concatenate([act, act_cont], axis=1))
 
-            actions.append(act)  # TODO store continuous #1done
+            actions.append(act)
             actions_continuous.append(act_cont)
             rewards.append(reward)
             dones.append(done)
@@ -102,7 +102,7 @@ class Collector:
 
                 for episode_id in self.episode_ids:
                     episode = self.dataset.get_episode(episode_id)
-                    self.episode_dir_manager.save(episode, episode_id, epoch)
+                    self.episode_dir_manager.save(episode, episode_id, epoch)  # only for logging purposes
                     metrics_episode = {k: v for k, v in episode.compute_metrics().__dict__.items()}
                     metrics_episode['episode_num'] = episode_id
                     metrics_episode['action_histogram'] = wandb.Histogram(
@@ -119,9 +119,11 @@ class Collector:
         else:
             self.env.env.__exit__()
 
-        # Add incomplete episodes to dataset, and complete them later.
+        # We do not complete unfinished episodes later because the env is real-time.
         if len(observations) > 0:
             self.add_experience_to_dataset(observations, actions, actions_continuous, rewards, dones)
+        self.episode_ids = [None] * self.env.num_envs
+        self.obs = None
 
         agent.actor_critic.clear()
 
@@ -139,14 +141,15 @@ class Collector:
     def add_experience_to_dataset(self, observations: List[np.ndarray], actions: List[np.ndarray],
                                   actions_continuous: List[np.ndarray], rewards: List[np.ndarray],
                                   dones: List[np.ndarray]) -> None:
-        print([np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
+        print("collector.Collector.add_experience_to_dataset: ",
+              [np.shape(x) for x in [observations, actions, actions_continuous, rewards, dones]])
         assert len(observations) == len(actions) == len(actions_continuous) == len(rewards) == len(dones)
         for i, (o, a, ac, r, d) in enumerate(zip(*map(lambda arr: np.swapaxes(arr, 0, 1),
                                                       [observations, actions, actions_continuous, rewards,
                                                        dones]))):  # Make everything (N, T, ...) instead of (T, N, ...)
             episode = Episode(
                 observations=torch.ByteTensor(o).permute(0, 3, 1, 2).contiguous(),  # channel-first
-                actions=torch.LongTensor(a),  # TODO add continuous #1done
+                actions=torch.LongTensor(a),
                 actions_continuous=torch.FloatTensor(ac),
                 rewards=torch.FloatTensor(r),
                 ends=torch.LongTensor(d),
@@ -155,4 +158,5 @@ class Collector:
             if self.episode_ids[i] is None:
                 self.episode_ids[i] = self.dataset.add_episode(episode)
             else:
-                self.dataset.update_episode(self.episode_ids[i], episode)
+                raise RuntimeError("Episode updates are not supported")
+                # self.dataset.update_episode(self.episode_ids[i], episode)  # not used

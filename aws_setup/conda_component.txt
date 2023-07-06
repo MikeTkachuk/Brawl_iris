@@ -1,0 +1,36 @@
+name: conda
+description: Installs Miniconda.
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: download
+        action: ExecuteBash
+        inputs:
+          commands:
+            - wget https://repo.anaconda.com/miniconda/Miniconda3-py39_23.3.1-0-Linux-x86_64.sh
+            - echo "1564571a6a06a9999a75a6c65d63cb82911fc647e96ba5b729f904bf00c177d3 Miniconda3-py39_23.3.1-0-Linux-x86_64.sh" > checksum
+            - echo "!!!!!!! Actual and true hashes below"
+            - sha256sum Miniconda3-py39_23.3.1-0-Linux-x86_64.sh
+            - cat checksum
+            - sha256sum --check checksum --status
+
+      - name: install
+        action: ExecuteBash
+        inputs:
+          commands:
+            - export HOME=/home/ec2-user
+            - bash Miniconda3-py39_23.3.1-0-Linux-x86_64.sh -b
+
+      - name: addToPath
+        action: ExecuteBash
+        inputs:
+          commands:
+            - export PATH=$PATH:~$HOME/miniconda3/bin
+
+      - name: condaUpdate
+        action: ExecuteBash
+        inputs:
+          commands:
+            - conda update -n base conda

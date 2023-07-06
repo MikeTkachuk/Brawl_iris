@@ -33,7 +33,7 @@ class WorldModel(nn.Module):
 
         all_but_last_obs_tokens_pattern = torch.ones(config.tokens_per_block)
         all_but_last_obs_tokens_pattern[-2] = 0
-        act_tokens_pattern = torch.zeros(self.config.tokens_per_block)
+        act_tokens_pattern = torch.zeros(config.tokens_per_block)
         act_tokens_pattern[-1] = 1
         obs_tokens_pattern = 1 - act_tokens_pattern
 
@@ -46,7 +46,7 @@ class WorldModel(nn.Module):
                 [nn.Embedding(act_vocab_size, config.embed_dim), nn.Embedding(obs_vocab_size, config.embed_dim)]),
             continuous_size=self.act_continuous_size,
             action_table_id=0
-        )  # TODO append to embedding (pay attention to joint embedding) #1done
+        )
 
         self.head_observations = Head(
             max_blocks=config.max_blocks,
@@ -88,7 +88,7 @@ class WorldModel(nn.Module):
         num_steps = tokens.size(1)  # (B, T)
         assert num_steps <= self.config.max_tokens
         prev_steps = 0 if past_keys_values is None else past_keys_values.size
-        # TODO map continuous actions into another "embedding" #1done
+
         sequences = self.embedder(tokens, num_steps, prev_steps, continuous=continuous) + \
                     self.pos_emb(prev_steps + torch.arange(num_steps, device=tokens.device))
 
@@ -104,7 +104,7 @@ class WorldModel(nn.Module):
         with torch.no_grad():
             obs_tokens = tokenizer.encode(batch['observations'], should_preprocess=True).tokens  # (BL, K)
 
-        act_tokens = rearrange(batch['actions'], 'b l -> b l 1')  # TODO check for continuous #1done
+        act_tokens = batch['actions']
         act_continuous = batch['actions_continuous']
         tokens = rearrange(torch.cat((obs_tokens, act_tokens), dim=2), 'b l k1 -> b (l k1)')  # (B, L(K+1))
 
