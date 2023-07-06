@@ -20,11 +20,12 @@ def main(cfg: DictConfig):
 
     # train code
     metrics = trainer.train_agent(trainer.start_epoch)
-    with open('/home/ec2-user/checkpoints/metrics.json', 'w') as metrics_file:
-        json.dump(metrics, metrics_file)
 
     trainer.save_checkpoint(trainer.start_epoch, False)
     shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)
+
+    with open('/home/ec2-user/checkpoints/metrics.json', 'w') as metrics_file:
+        json.dump(metrics, metrics_file)
 
 
 if __name__ == "__main__":

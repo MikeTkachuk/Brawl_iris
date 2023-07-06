@@ -136,7 +136,6 @@ class Trainer:
             print(f"\nEpoch {epoch} / {self.cfg.common.epochs}\n")
             start_time = time.time()
             to_log = []
-            # TODO do collection every 5 epochs, otherwise it is time consuming to pass data around
             if self.cfg.training.should:
                 if epoch <= self.cfg.collection.train.stop_after_epochs:
                     to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
@@ -167,7 +166,7 @@ class Trainer:
         :param epoch:
         :return:
         """
-        # defile idle clicker to keep the game active  # TODO add more interaction (not working now)
+        # defile idle clicker to keep the game active
         from controls import idle_click
 
         def _clicker(_stop_event: threading.Event):
@@ -177,8 +176,8 @@ class Trainer:
                 if _stop_event.is_set():
                     break
 
-        stop_key = threading.Event()
-        idle_clicker = threading.Thread(target=_clicker, args=(stop_key,))
+        stop_idle_clicking_key = threading.Event()
+        idle_clicker = threading.Thread(target=_clicker, args=(stop_idle_clicking_key,))
         idle_clicker.start()
 
         # start initialization
@@ -200,30 +199,42 @@ class Trainer:
             s3_client = boto3.client(
                 's3'
             )
-            # TODO not valid if save_to_dick was called. uploads only the latest changed in the latest epoch.
-            #  Need to compare with local copy
-            to_upload, to_delete = self.train_dataset.get_file_changes(self.ckpt_dir / 'dataset')
+
+            to_upload, to_delete = [], []
             self.save_checkpoint(epoch, save_agent_only=False)
+            local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
+            cloud_dataset_response = s3_client.list_objects_v2(
+                Bucket=self.cfg.cloud.bucket_name,
+                Prefix=str(run_prefix / 'checkpoints/dataset').replace('\\', '/')
+            )
+            cloud_dataset_filenames = set(
+                Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
+            to_upload.extend([self.ckpt_dir / 'dataset' / file_name
+                              for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
+            to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
 
             # delete old episodes on cloud
-            for file in to_delete:
+            for file_name in to_delete:
                 s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
-                                        Key=str(run_prefix / 'checkpoints/dataset' / file.name).replace('\\', '/'))
+                                        Key=str(run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
 
             # upload updated episodes and model checkpoints
             if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(run_prefix / 'checkpoints'))['KeyCount'] < 3:  # only the first time
+                                         Prefix=str(run_prefix / 'checkpoints').replace('\\', '/')
+                                         )['KeyCount'] < 3:  # only the first time
                 print('Trainer.train_agent_cloud: full checkpoint staged for upload')
                 to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
+            else:
+                to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
             print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
-            for file in to_upload:
+            for file in tqdm(to_upload):
                 name_on_bucket = str(run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
                 s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
 
             repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/trainer.py
             if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(run_prefix / repo_root.name))[
-                'KeyCount'] < 3:  # only the first time TODO this check not working
+                                         Prefix=str(run_prefix / repo_root.name).replace('\\', '/')
+                                         )['KeyCount'] < 3:  # only the first time
                 print('Trainer.train_agent_cloud: code upload started')
                 # upload code if needed
                 name_on_bucket = str(run_prefix / f'{repo_root.name}').replace('\\', '/')
@@ -240,7 +251,8 @@ class Trainer:
             with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
                 instance.connect(self.cfg.cloud.key_file)
                 time.sleep(5)  # prevents unfinished initializations
-                # TODO clean up code and checkpoints before download (rm checkpoints -r)
+                instance.exec_command("rm -r Brawl_iris")
+                instance.exec_command("rm -r checkpoints")
                 instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{run_prefix}\" ~ "
                                       f"--recursive "
                                       f"--quiet")
@@ -260,10 +272,12 @@ class Trainer:
             self.load_checkpoint(load_dataset=False)
             with open(self.ckpt_dir / 'metrics.json') as metrics_file:
                 metrics = json.load(metrics_file)
-                print(f'Trainer.train_agent_cloud: Received metrics: {metrics}')  # TODO metrics are weird (epoch mismatch etc)
+                metrics[0]['duration_gpu'] = instance.session_time / 3600
+                print(
+                    f'Trainer.train_agent_cloud: Received metrics: {metrics}')
 
         # terminate clicker
-        stop_key.set()
+        stop_idle_clicking_key.set()
         idle_clicker.join()
 
         return metrics
@@ -312,8 +326,6 @@ class Trainer:
         for step in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout, mininterval=5):
             optimizer.zero_grad()
             for _ in range(grad_acc_steps):
-                if step % 20 == 0:
-                    print(flush=True)
                 batch = self.train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
                                                         sample_from_start)
                 batch = self._to_device(batch)
@@ -325,6 +337,9 @@ class Trainer:
 
                 for loss_name, loss_value in losses.intermediate_losses.items():
                     intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
+
+                if step % 20 == 0:
+                    print(f"Total Loss at {step} step: {loss_total_epoch*steps_per_epoch/step}", flush=True)
 
             if max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
@@ -456,41 +471,3 @@ class Trainer:
 
     def finish(self) -> None:
         wandb.finish()
-
-
-def train_independent_component(checkpoint: str,
-                                optimizer_checkpoint: str,
-                                train_dataset_path: str,
-                                steps_per_epoch: int,
-                                batch_num_samples: int, grad_acc_steps: int, max_grad_norm: Optional[float],
-                                sequence_length: int, sampling_weights: Optional[Tuple[float]], sample_from_start: bool,
-                                **kwargs_loss: Any) -> Dict[str, float]:
-    """Primary function to be executed on cloud"""
-
-    component = torch.load(checkpoint)
-
-    loss_total_epoch = 0.0
-    intermediate_losses = defaultdict(float)
-
-    for _ in tqdm(range(steps_per_epoch), desc=f"Training {str(component)}", file=sys.stdout):
-        optimizer.zero_grad()
-        for _ in range(grad_acc_steps):
-            batch = train_dataset.sample_batch(batch_num_samples, sequence_length, sampling_weights,
-                                               sample_from_start)
-            batch = self._to_device(batch)
-
-            losses = component.compute_loss(batch, **kwargs_loss) / grad_acc_steps
-            loss_total_step = losses.loss_total
-            loss_total_step.backward()
-            loss_total_epoch += loss_total_step.item() / steps_per_epoch
-
-            for loss_name, loss_value in losses.intermediate_losses.items():
-                intermediate_losses[f"{str(component)}/train/{loss_name}"] += loss_value / steps_per_epoch
-
-        if max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
-
-        optimizer.step()
-
-    metrics = {f'{str(component)}/train/total_loss': loss_total_epoch, **intermediate_losses}
-    return metrics

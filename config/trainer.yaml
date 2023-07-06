@@ -12,7 +12,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "first_run"
+  name: "eve_full"
   group: null
   tags: null
   notes: null
@@ -40,7 +40,7 @@ collection:
       epsilon: 0.01  # random move proba
       should_sample: True
       temperature: 1.0
-      num_steps: 50 #200
+      num_steps: 200
       burn_in: ${training.actor_critic.burn_in}
   test:
     num_envs: 1
