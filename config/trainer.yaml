@@ -12,12 +12,13 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "eve_full"
+  name: "eve_full_continued_1"
   group: null
   tags: null
   notes: null
 
 initialization:
+  storage_prefix: null # run prefix on bucket to load agent weights. Prioritized over path
   path_to_checkpoint: null
   load_tokenizer: False
   load_world_model: False
@@ -29,7 +30,7 @@ common:
   do_checkpoint: True
   seed: 0
   sequence_length: ${world_model.max_blocks}
-  resume: False # set by resume.sh script only.
+  resume: "eve_full_2023-07-05_19-32-27" # run prefix on bucket or False. Loads full checkpoint
 
 collection:
   train:

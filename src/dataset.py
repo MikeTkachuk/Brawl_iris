@@ -129,6 +129,11 @@ class EpisodesDataset:
             episode_path.unlink()
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
 
+        # flush episodes to disk
+        episodes_flushed = len(self)
+        self.clear()
+        print(f'dataset.Dataset.update_disk_checkpoint: flushed {episodes_flushed} episodes to disk')
+
     def get_file_changes(self, directory: Path):
         updated_files, deleted_files = [], []
         for episode_id in self.newly_modified_episodes:

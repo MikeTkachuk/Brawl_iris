@@ -56,15 +56,14 @@ class Trainer:
         self.episode_dir = self.media_dir / 'episodes'
         self.reconstructions_dir = self.media_dir / 'reconstructions'
 
-        if not cfg.common.resume:
-            config_dir = Path('config')
-            config_path = config_dir / 'trainer.yaml'
-            config_dir.mkdir(exist_ok=False, parents=False)
-            shutil.copy('.hydra/config.yaml', config_path)
-            self.ckpt_dir.mkdir(exist_ok=True, parents=False)
-            self.media_dir.mkdir(exist_ok=False, parents=False)
-            self.episode_dir.mkdir(exist_ok=False, parents=False)
-            self.reconstructions_dir.mkdir(exist_ok=False, parents=False)
+        config_dir = Path('config')
+        config_path = config_dir / 'trainer.yaml'
+        config_dir.mkdir(exist_ok=False, parents=False)
+        shutil.copy('.hydra/config.yaml', config_path)
+        self.ckpt_dir.mkdir(exist_ok=True, parents=False)
+        self.media_dir.mkdir(exist_ok=False, parents=False)
+        self.episode_dir.mkdir(exist_ok=False, parents=False)
+        self.reconstructions_dir.mkdir(exist_ok=False, parents=False)
 
         episode_manager_train = EpisodeDirManager(self.episode_dir / 'train',
                                                   max_num_episodes=cfg.collection.train.num_episodes_to_save)
@@ -115,11 +114,25 @@ class Trainer:
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
                                                        lr=cfg.training.learning_rate)
 
-        if cfg.initialization.path_to_checkpoint is not None:
-            self.agent.load(**cfg.initialization, device=self.device)
+        if not self.cloud_instance:
+            if cfg.initialization.storage_prefix is not None:
+                os.system(f'aws s3 cp s3://{cfg.cloud.bucket_name}/'
+                          f'{cfg.initialization.storage_prefix}/checkpoints/last.pt '
+                          f'{self.ckpt_dir / "last.pt"}')
+                cfg.initialization.path_to_checkpoint = self.ckpt_dir / "last.pt"
+            if cfg.initialization.path_to_checkpoint is not None:
+                self.agent.load(**cfg.initialization, device=self.device)
 
-        if cfg.common.resume:
-            self.load_checkpoint()
+            if cfg.common.resume:
+                os.system(f'aws s3 cp s3://{cfg.cloud.bucket_name}/{cfg.common.resume}/checkpoints '
+                          f'{self.ckpt_dir} '
+                          f'--recursive '
+                          f'--quiet'
+                          )
+                self.load_checkpoint(load_dataset=False)
+                self.train_dataset.num_seen_episodes = max(
+                    [int(p.stem) for p in (self.ckpt_dir / 'dataset').glob('*')]
+                ) + 1
 
     def benchmark(self):
         for i in range(20):
@@ -445,10 +458,14 @@ class Trainer:
         self._save_checkpoint(epoch, save_agent_only)
         shutil.rmtree(tmp_checkpoint_dir)
 
-    def load_checkpoint(self, load_dataset=True) -> None:
+    def load_checkpoint(self, load_dataset=True, agent_only=False) -> None:
         assert self.ckpt_dir.is_dir()
-        self.start_epoch = torch.load(self.ckpt_dir / 'epoch.pt') + 1
         self.agent.load(self.ckpt_dir / 'last.pt', device=self.device)
+        if agent_only:
+            print(f'Successfully loaded agent from {self.ckpt_dir.absolute()}.')
+            return
+
+        self.start_epoch = torch.load(self.ckpt_dir / 'epoch.pt') + 1
         ckpt_opt = torch.load(self.ckpt_dir / 'optimizer.pt', map_location=self.device)
         self.optimizer_tokenizer.load_state_dict(ckpt_opt['optimizer_tokenizer'])
         self.optimizer_world_model.load_state_dict(ckpt_opt['optimizer_world_model'])
@@ -458,7 +475,8 @@ class Trainer:
         if self.cfg.evaluation.should:
             self.test_dataset.num_seen_episodes = torch.load(self.ckpt_dir / 'num_seen_episodes_test_dataset.pt')
         print(
-            f'Successfully loaded model, optimizer and {len(self.train_dataset)} episodes from {self.ckpt_dir.absolute()}.')
+            f'Successfully loaded model, optimizer '
+            f'{f"and {len(self.train_dataset)} episodes" if load_dataset else ""} from {self.ckpt_dir.absolute()}.')
 
     def _to_device(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         return {k: batch[k].to(self.device) for k in batch}
