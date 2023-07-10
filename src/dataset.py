@@ -20,9 +20,10 @@ class EpisodesDataset:
         self.episodes = deque()
         self.episode_id_to_queue_idx = dict()
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
+        self.disk_episodes = deque()
 
     def __len__(self) -> int:
-        return len(self.episodes)
+        return len(self.disk_episodes)
 
     def clear(self) -> None:
         self.episodes = deque()
@@ -31,7 +32,7 @@ class EpisodesDataset:
     def add_episode(self, episode: Episode) -> int:
         print('dataset.Dataset.add_episode: ADD DATASET LOGGING')
         print(len(self.episodes), self.max_num_episodes)
-        if self.max_num_episodes is not None and len(self.episodes) == self.max_num_episodes:
+        if self.max_num_episodes is not None and len(self.disk_episodes) == self.max_num_episodes:
             self._popleft()
         episode_id = self._append_new_episode(episode)
         print('dataset.Dataset.add_episode: AFTER ADD DATASET LOGGING')
@@ -39,29 +40,25 @@ class EpisodesDataset:
         return episode_id
 
     def get_episode(self, episode_id: int) -> Episode:
-        assert episode_id in self.episode_id_to_queue_idx
+        assert episode_id in self.disk_episodes
+        assert episode_id in self.episode_id_to_queue_idx, f"Episode {episode_id} is not loaded"
         queue_idx = self.episode_id_to_queue_idx[episode_id]
         return self.episodes[queue_idx]
 
-    def update_episode(self, episode_id: int, new_episode: Episode) -> None:
-        assert episode_id in self.episode_id_to_queue_idx
-        queue_idx = self.episode_id_to_queue_idx[episode_id]
-        merged_episode = self.episodes[queue_idx].merge(new_episode)
-        self.episodes[queue_idx] = merged_episode
-        self.newly_modified_episodes.add(episode_id)
-
-    def _popleft(self) -> Episode:
-        id_to_delete = [k for k, v in self.episode_id_to_queue_idx.items() if v == 0]
-        assert len(id_to_delete) == 1
-        self.newly_deleted_episodes.add(id_to_delete[0])
-        self.newly_modified_episodes.discard(id_to_delete[0])  # in case an episode is created and deleted in one epoch
-        self.episode_id_to_queue_idx = {k: v - 1 for k, v in self.episode_id_to_queue_idx.items() if v > 0}
-        return self.episodes.popleft()
+    def _popleft(self) -> int:
+        id_to_delete = self.disk_episodes.popleft()
+        self.newly_deleted_episodes.add(id_to_delete)
+        self.newly_modified_episodes.discard(id_to_delete)  # in case an episode is created and deleted in one epoch
+        if id_to_delete in self.episode_id_to_queue_idx:
+            self.episode_id_to_queue_idx = {k: v - 1 for k, v in self.episode_id_to_queue_idx.items() if v > 0}
+            self.episodes.popleft()
+        return id_to_delete
 
     def _append_new_episode(self, episode):
         episode_id = self.num_seen_episodes
         self.episode_id_to_queue_idx[episode_id] = len(self.episodes)
         self.episodes.append(episode)
+        self.disk_episodes.append(episode_id)
         self.num_seen_episodes += 1
         self.newly_modified_episodes.add(episode_id)
         return episode_id
@@ -115,11 +112,11 @@ class EpisodesDataset:
             for b in batches:
                 yield self._collate_episodes_segments(b)
 
-    def update_disk_checkpoint(self, directory: Path) -> None:
+    def update_disk_checkpoint(self, directory: Path, flush=True) -> None:
         assert directory.is_dir()
         print(f'dataset.Dataset.update_disk_checkpoint: map: {self.episode_id_to_queue_idx}'
               f' n_mod: {self.newly_modified_episodes} n_del: {self.newly_deleted_episodes}')
-
+        num_flushed = len(self.newly_modified_episodes)
         for episode_id in self.newly_modified_episodes:
             episode = self.get_episode(episode_id)
             episode_path = directory / f'{episode_id}.pt'
@@ -130,28 +127,20 @@ class EpisodesDataset:
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
 
         # flush episodes to disk
-        episodes_flushed = len(self)
-        self.clear()
-        print(f'dataset.Dataset.update_disk_checkpoint: flushed {episodes_flushed} episodes to disk')
+        if flush:
+            self.clear()
+            print(f'dataset.Dataset.update_disk_checkpoint: flushed {num_flushed} episodes to disk')
 
-    def get_file_changes(self, directory: Path):
-        updated_files, deleted_files = [], []
-        for episode_id in self.newly_modified_episodes:
-            episode_path = directory / f'{episode_id}.pt'
-            updated_files.append(episode_path)
-        for episode_id in self.newly_deleted_episodes:
-            episode_path = directory / f'{episode_id}.pt'
-            deleted_files.append(episode_path)
-        return updated_files, deleted_files
-
-    def load_disk_checkpoint(self, directory: Path) -> None:
-        assert directory.is_dir() and len(self.episodes) == 0  # TODO check dataset lifecycle
+    def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
+        assert directory.is_dir()
         episode_ids = sorted([int(p.stem) for p in directory.iterdir()])
+        self.disk_episodes = deque(episode_ids)
         self.num_seen_episodes = episode_ids[-1] + 1
-        for episode_id in episode_ids:
-            episode = Episode(**torch.load(directory / f'{episode_id}.pt'))
-            self.episode_id_to_queue_idx[episode_id] = len(self.episodes)
-            self.episodes.append(episode)
+        if load_episodes:
+            for episode_id in episode_ids:
+                episode = Episode(**torch.load(directory / f'{episode_id}.pt'))
+                self.episode_id_to_queue_idx[episode_id] = len(self.episodes)
+                self.episodes.append(episode)
 
 
 class EpisodesDatasetRamMonitoring(EpisodesDataset):

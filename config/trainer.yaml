@@ -12,7 +12,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "eve_full_continued_1"
+  name: "eve_resume_test"
   group: null
   tags: null
   notes: null
@@ -30,7 +30,7 @@ common:
   do_checkpoint: True
   seed: 0
   sequence_length: ${world_model.max_blocks}
-  resume: "eve_full_2023-07-05_19-32-27" # run prefix on bucket or False. Loads full checkpoint
+  resume: False # run prefix on bucket or False. Loads full checkpoint
 
 collection:
   train:
