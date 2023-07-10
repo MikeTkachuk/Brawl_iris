@@ -43,7 +43,8 @@ class WorldModel(nn.Module):
             max_blocks=config.max_blocks,
             block_masks=[act_tokens_pattern, obs_tokens_pattern],
             embedding_tables=nn.ModuleList(
-                [nn.Embedding(act_vocab_size, config.embed_dim), nn.Embedding(obs_vocab_size, config.embed_dim)]),
+                [nn.Embedding(act_vocab_size, config.embed_dim), nn.Embedding(obs_vocab_size, config.embed_dim)]
+            ),
             continuous_size=self.act_continuous_size,
             action_table_id=0
         )
@@ -128,6 +129,7 @@ class WorldModel(nn.Module):
         mask_fill = torch.logical_not(mask_padding)
         labels_observations = rearrange(obs_tokens.masked_fill(mask_fill.unsqueeze(-1).expand_as(obs_tokens), -100),
                                         'b t k -> b (t k)')[:, 1:]
+        # TODO make more bins for rewards
         labels_rewards = (rewards.sign() + 1).masked_fill(mask_fill, -100).long()  # Rewards clipped to {-1, 0, 1}
         labels_ends = ends.masked_fill(mask_fill, -100)
         return labels_observations.reshape(-1), labels_rewards.reshape(-1), labels_ends.reshape(-1)
