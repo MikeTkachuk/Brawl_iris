@@ -5,6 +5,8 @@ sys.path.append(os.getcwd())
 
 import json
 import shutil
+from pathlib import Path
+
 import hydra
 from omegaconf import DictConfig
 
@@ -19,13 +21,15 @@ def main(cfg: DictConfig):
     trainer.start_epoch -= 1  # negates increment in load_checkpoint()
 
     # train code
-    metrics = trainer.train_agent(trainer.start_epoch)
+    for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
+        metrics = trainer.train_agent(epoch)
+        metrics_file_path = Path(f'metrics.json')
+        with open(metrics_file_path, 'w') as metrics_file:
+            json.dump(metrics, metrics_file)
+        os.system(f"aws cp {metrics_file_path} {cfg.cloud.bucket_name}/{cfg.cloud.buffer}/{metrics_file_path.name}")
 
-    trainer.save_checkpoint(trainer.start_epoch, False)
+    trainer.save_checkpoint(trainer.start_epoch + cfg.training.epochs_per_job - 1, save_agent_only=False)
     shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)
-
-    with open('/home/ec2-user/checkpoints/metrics.json', 'w') as metrics_file:
-        json.dump(metrics, metrics_file)
 
 
 if __name__ == "__main__":

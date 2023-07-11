@@ -25,11 +25,16 @@ from src.make_reconstructions import make_reconstructions_from_batch
 from src.models.actor_critic import ActorCritic
 from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
-from src.aws import InstanceContext
+from src.aws.compute_instance import InstanceContext
 
 import boto3
 
-
+# TODO
+#  + train_cloud - independent training loop with epochs, metrics logging to aws
+#  - aws - metric listener for long on-cloud runs
+#  - aws - job_runner semantics (a class with run init, run commands, run wrap up)
+#  - trainer - rewrite job handling
+#  - trainer - rewrite run loop (
 class Trainer:
     def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
         self.cloud_instance = cloud_instance

@@ -1,7 +1,8 @@
 # Brawl Iris
 ### (Fork of Transformers are Sample Efficient World Models (IRIS))
 
-**To be updated**
+###A modification of original IRIS. Changelist:
+- handles continuous actions. They are appended to the embedding of an action token
+- added an option to store data on AWS and train remotely on EC2
 
-The real-time constraint of this repo is 2 agent actions per second.  
-The world models might be sensitive to timestep scaling.
+

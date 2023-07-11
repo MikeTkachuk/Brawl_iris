@@ -38,7 +38,8 @@ def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_na
     inter_params = decay & no_decay
     union_params = decay | no_decay
     assert len(inter_params) == 0, f"parameters {str(inter_params)} made it into both decay/no_decay sets!"
-    assert len(param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
+    assert len(
+        param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
 
     # create the pytorch optimizer object
     optim_groups = [
@@ -142,11 +143,11 @@ class RandomHeuristic:
         assert obs.ndim == 4  # (N, H, W, C)
         n = obs.size(0)
 
-        return torch.randint(low=0, high=self.num_actions, size=(n,)), torch.rand(size=(n,self.num_continuous))
+        return torch.randint(low=0, high=self.num_actions, size=(n,)), torch.rand(size=(n, self.num_continuous))
 
 
 def make_video(fname, fps, frames):
-    assert frames.ndim == 4 # (t, h, w, c)
+    assert frames.ndim == 4  # (t, h, w, c)
     t, h, w, c = frames.shape
     assert c == 3
 
@@ -154,4 +155,3 @@ def make_video(fname, fps, frames):
     for frame in frames:
         video.write(frame[:, :, ::-1])
     video.release()
-
