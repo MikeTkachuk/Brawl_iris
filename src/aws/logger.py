@@ -18,7 +18,7 @@ class LogListener:
 
         self._termination_key = Event()
         self._thread = Thread(target=self._listen, args=(self,))
-        self._ref_hash = hash('hash')
+        self._ref_hash = hash('hash')  # TODO might log immediately if metrics file is already there
 
     def start(self):
         self._thread.start()

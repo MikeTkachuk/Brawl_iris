@@ -17,6 +17,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from src.agent import Agent
+from src.aws.job_runner import JobRunner
 from src.collector import Collector
 from src.envs import SingleProcessEnv, MultiProcessEnv
 from src.episode import Episode
@@ -31,7 +32,7 @@ import boto3
 
 # TODO
 #  + train_cloud - independent training loop with epochs, metrics logging to aws
-#  - aws - metric listener for long on-cloud runs
+#  + aws - metric listener for long on-cloud runs
 #  - aws - job_runner semantics (a class with run init, run commands, run wrap up)
 #  - trainer - rewrite job handling
 #  - trainer - rewrite run loop (
@@ -176,6 +177,40 @@ class Trainer:
 
         self.finish()
 
+    def prepare_job(self):
+        s3_client = boto3.client(
+            's3'
+        )
+        to_upload, to_delete = [], []
+        local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
+        cloud_dataset_response = s3_client.list_objects_v2(
+            Bucket=self.cfg.cloud.bucket_name,
+            Prefix=str(self.run_prefix / 'checkpoints/dataset').replace('\\', '/')
+        )
+        cloud_dataset_filenames = set(
+            Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
+        to_upload.extend([self.ckpt_dir / 'dataset' / file_name
+                          for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
+        to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
+
+        # delete old episodes on cloud
+        for file_name in to_delete:
+            s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
+                                    Key=str(self.run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
+
+        # upload updated episodes and model checkpoints if needed
+        if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
+                                     Prefix=str(self.run_prefix / 'checkpoints').replace('\\', '/')
+                                     )['KeyCount'] < 3:  # only the first time
+            print('Trainer.train_agent_cloud: full checkpoint staged for upload')
+            to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
+        else:
+            to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
+        print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
+        for file in tqdm(to_upload):
+            name_on_bucket = str(self.run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
+            s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
+
     def train_agent_cloud(self, epoch: int):
         """
         Uploads checkpoints to storage, launches optimization jobs on cloud,
@@ -188,14 +223,13 @@ class Trainer:
 
         def _clicker(_stop_event: threading.Event):
             while True:
-                idle_click()
-                time.sleep(5)
                 if _stop_event.is_set():
                     break
+                idle_click()
+                time.sleep(5)
 
         stop_idle_clicking_key = threading.Event()
         idle_clicker = threading.Thread(target=_clicker, args=(stop_idle_clicking_key,))
-        idle_clicker.start()
 
         # start initialization
         metrics = [{'epoch': epoch}]
@@ -211,71 +245,30 @@ class Trainer:
             epoch > cfg_actor_critic.start_after_epochs
         ]):
 
-            # upload new and delete old episodes
-            s3_client = boto3.client(
-                's3'
-            )
+            idle_clicker.start()
 
-            to_upload, to_delete = [], []
             self.save_checkpoint(epoch, save_agent_only=False)
-            local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
-            cloud_dataset_response = s3_client.list_objects_v2(
-                Bucket=self.cfg.cloud.bucket_name,
-                Prefix=str(self.run_prefix / 'checkpoints/dataset').replace('\\', '/')
-            )
-            cloud_dataset_filenames = set(
-                Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
-            to_upload.extend([self.ckpt_dir / 'dataset' / file_name
-                              for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
-            to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
-
-            # delete old episodes on cloud
-            for file_name in to_delete:
-                s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
-                                        Key=str(self.run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
-
-            # upload updated episodes and model checkpoints
-            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(self.run_prefix / 'checkpoints').replace('\\', '/')
-                                         )['KeyCount'] < 3:  # only the first time
-                print('Trainer.train_agent_cloud: full checkpoint staged for upload')
-                to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
-            else:
-                to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
-            print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
-            for file in tqdm(to_upload):
-                name_on_bucket = str(self.run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
-                s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
-
+            self.prepare_job()
             repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/trainer.py
-            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(self.run_prefix / repo_root.name).replace('\\', '/')
-                                         )['KeyCount'] < 3:  # only the first time
-                print('Trainer.train_agent_cloud: code upload started')
-                # upload code if needed
-                name_on_bucket = str(self.run_prefix / f'{repo_root.name}').replace('\\', '/')
-                os.system(f'aws s3 cp {repo_root} s3://{self.cfg.cloud.bucket_name}/{name_on_bucket} '
-                          f'--exclude ".git/*" '
-                          f'--exclude ".idea/*" '
-                          f'--exclude "results/*" '
-                          f'--exclude "assets/*" '
-                          f'--recursive '
-                          f'--quiet')
-                print('Trainer.train_agent_cloud: code upload finished')
+            job_commands = [
+                "rm -r Brawl_iris checkpoints",
 
-            # start job
-            with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
-                instance.connect(self.cfg.cloud.key_file)
-                time.sleep(5)  # prevents unfinished initializations
-                instance.exec_command("rm -r Brawl_iris checkpoints")
-                instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}\" ~ "
-                                      f"--recursive "
-                                      f"--quiet")
-                env_actions = json.dumps({'num_actions': int(self.train_collector.env.num_actions),
-                                          'num_continuous': int(self.train_collector.env.num_continuous)})
+                f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}\" ~ "
+                f"--recursive "
+                f"--quiet",
+
                 # TODO (not important) save env_actions in config
+                f"sh {repo_root.name}/aws_setup/run.sh {self.run_prefix}",
+            ]
+            job = JobRunner(self.cfg.cloud.bucket_name,
+                            str(self.run_prefix),
+                            self.cfg.cloud.instance_id,
+                            self.cfg.cloud.region_name,
+                            self.cfg.cloud.key_file,
+                            job_commands
+                            )
 
-                instance.exec_command(f"sh {repo_root.name}/aws_setup/run.sh {self.run_prefix}")
+            job.run()
 
             # download checkpoint and metrics
             os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints {self.ckpt_dir} '
@@ -290,9 +283,9 @@ class Trainer:
                 print(
                     f'Trainer.train_agent_cloud: Received metrics: {metrics}')
 
-        # terminate clicker
-        stop_idle_clicking_key.set()
-        idle_clicker.join()
+            # terminate clicker
+            stop_idle_clicking_key.set()
+            idle_clicker.join()
 
         return metrics
 
