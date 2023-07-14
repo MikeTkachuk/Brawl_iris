@@ -26,16 +26,11 @@ from src.make_reconstructions import make_reconstructions_from_batch
 from src.models.actor_critic import ActorCritic
 from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
-from src.aws.compute_instance import InstanceContext
+from src.aws.logger import LogListener
 
 import boto3
 
-# TODO
-#  + train_cloud - independent training loop with epochs, metrics logging to aws
-#  + aws - metric listener for long on-cloud runs
-#  - aws - job_runner semantics (a class with run init, run commands, run wrap up)
-#  - trainer - rewrite job handling
-#  - trainer - rewrite run loop (
+
 class Trainer:
     def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
         self.cloud_instance = cloud_instance
@@ -48,6 +43,9 @@ class Trainer:
                 **self.cfg.wandb
             )
             self.run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
+            self.log_listener = LogListener(lambda x: [wandb.log(x[i]) for i in range(len(x))],
+                                            self.cfg.cloud.log_path,
+                                            self.cfg.cloud.bucket_name)
 
         if self.cfg.common.seed is not None:
             set_seed(self.cfg.common.seed)
@@ -181,6 +179,7 @@ class Trainer:
         s3_client = boto3.client(
             's3'
         )
+
         to_upload, to_delete = [], []
         local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
         cloud_dataset_response = s3_client.list_objects_v2(
@@ -265,10 +264,11 @@ class Trainer:
                             self.cfg.cloud.instance_id,
                             self.cfg.cloud.region_name,
                             self.cfg.cloud.key_file,
-                            job_commands
+                            job_commands,
+                            self.log_listener
                             )
 
-            job.run()
+            run_time = job.run()
 
             # download checkpoint and metrics
             os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints {self.ckpt_dir} '
@@ -279,7 +279,7 @@ class Trainer:
             self.load_checkpoint(load_dataset=False)
             with open(self.ckpt_dir / 'metrics.json') as metrics_file:
                 metrics = json.load(metrics_file)
-                metrics[0]['duration_gpu'] = instance.session_time / 3600
+                metrics[0]['duration_gpu'] = run_time / 3600
                 print(
                     f'Trainer.train_agent_cloud: Received metrics: {metrics}')
 

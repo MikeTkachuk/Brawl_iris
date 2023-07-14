@@ -23,10 +23,10 @@ def main(cfg: DictConfig):
     # train code
     for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
         metrics = trainer.train_agent(epoch)
-        metrics_file_path = Path(f'metrics.json')
+        metrics_file_path = Path(cfg.cloud.log_path).name
         with open(metrics_file_path, 'w') as metrics_file:
             json.dump(metrics, metrics_file)
-        os.system(f"aws cp {metrics_file_path} {cfg.cloud.bucket_name}/{cfg.cloud.buffer}/{metrics_file_path.name}")
+        os.system(f"aws cp {metrics_file_path} {cfg.cloud.bucket_name}/{cfg.cloud.log_path}")
 
     trainer.save_checkpoint(trainer.start_epoch + cfg.training.epochs_per_job - 1, save_agent_only=False)
     shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)

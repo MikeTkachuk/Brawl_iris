@@ -58,7 +58,7 @@ cloud:
   bucket_name: "brawl-stars-iris"
   instance_id: "i-0e9cb879b7a6f87c7"
   key_file: "C:\\Users\\Mykhailo_Tkachuk\\keypair1.pem"
-  buffer_path: "buffer"  # used for logging
+  log_path: "log/metrics.json"  # used for logging
 
 training:
   should: True

@@ -36,13 +36,13 @@ class JobRunner:
         self.commands = commands
         self.logger = logger
 
-    def upload_code(self):
-
-        s3_client = boto3.client('s3')
+    def upload_code(self, storage_client=None):
+        if storage_client is None:
+            storage_client = boto3.client('s3')
         repo_root = Path(__file__).parents[2]  # ->Brawl_iris/src/aws/job_runner.py
 
         # upload code if not already
-        if s3_client.list_objects_v2(Bucket=self.bucket_name,
+        if storage_client.list_objects_v2(Bucket=self.bucket_name,
                                      Prefix=f"{self.run_prefix}/{repo_root.name}"
                                      )['KeyCount'] < 3:
             print('JobRunner.upload_code: code upload started')
@@ -59,12 +59,18 @@ class JobRunner:
         else:
             print('JobRunner.upload_code: Skipped code upload')
 
+    def init_job(self):
+        s3_client = boto3.client('s3')
+        self.logger.init(s3_client)
+        self.upload_code(s3_client)
+
     def run(self):
 
-        self.upload_code()
+        self.init_job()
         with self.instance_context:
             self.instance_context.connect(self.ssh_file_path)
             if self.logger is not None:
+                self.logger.init()
                 self.logger.start()
 
             time.sleep(5)  # prevents unfinished initializations
@@ -73,3 +79,5 @@ class JobRunner:
 
             if self.logger is not None:
                 self.logger.stop()
+
+        return self.instance_context.session_time
