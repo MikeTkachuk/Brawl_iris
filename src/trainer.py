@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import sys
@@ -31,6 +30,12 @@ from src.aws.logger import LogListener
 import boto3
 
 
+def logging_function(to_log):
+    for i in range(len(to_log)):
+        print("Parsed and logged: ", to_log[i])
+        wandb.log(to_log[i], step=to_log[i].get("epoch"))
+
+
 class Trainer:
     def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
         self.cloud_instance = cloud_instance
@@ -43,9 +48,11 @@ class Trainer:
                 **self.cfg.wandb
             )
             self.run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
-            self.log_listener = LogListener(lambda x: [wandb.log(x[i]) for i in range(len(x))],
+            self.log_listener = LogListener(logging_function,
                                             self.cfg.cloud.log_path,
                                             self.cfg.cloud.bucket_name)
+            boto3.client('s3').delete_object(Bucket=self.cfg.cloud.bucket_name,
+                                             Key=self.cfg.cloud.log_path)  # start logging from an empty file
 
         if self.cfg.common.seed is not None:
             set_seed(self.cfg.common.seed)
@@ -147,31 +154,33 @@ class Trainer:
 
     def run(self) -> None:
 
-        for epoch in range(self.start_epoch, 1 + self.cfg.common.epochs):
+        while self.start_epoch <= self.cfg.common.epochs:
 
-            print(f"\nEpoch {epoch} / {self.cfg.common.epochs}\n")
+            print(f"\nEpoch {self.start_epoch} / {self.cfg.common.epochs}\n")
             start_time = time.time()
             to_log = []
             if self.cfg.training.should:
-                if epoch <= self.cfg.collection.train.stop_after_epochs:
-                    to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
+                if self.start_epoch <= self.cfg.collection.train.stop_after_epochs:
+                    to_log += self.train_collector.collect(self.agent, self.start_epoch, **self.cfg.collection.train.config)
 
                 if self.cfg.training.on_cloud:
-                    to_log += self.train_agent_cloud(epoch)
+                    to_log += self.train_agent_cloud(self.start_epoch)
                 else:
-                    to_log += self.train_agent(epoch)
+                    to_log += self.train_agent(self.start_epoch)
 
-            if self.cfg.evaluation.should and (epoch % self.cfg.evaluation.every == 0):
+            if self.cfg.evaluation.should and (self.start_epoch % self.cfg.evaluation.every == 0):
                 self.test_dataset.clear()
-                to_log += self.test_collector.collect(self.agent, epoch, **self.cfg.collection.test.config)
-                to_log += self.eval_agent(epoch)
+                to_log += self.test_collector.collect(self.agent, self.start_epoch, **self.cfg.collection.test.config)
+                to_log += self.eval_agent(self.start_epoch)
 
             if self.cfg.training.should:
-                self.save_checkpoint(epoch, save_agent_only=not self.cfg.common.do_checkpoint)
+                self.save_checkpoint(self.start_epoch, save_agent_only=not self.cfg.common.do_checkpoint)
 
             to_log.append({'duration': (time.time() - start_time) / 3600})
-            for metrics in to_log:
-                wandb.log({'epoch': epoch, **metrics})
+            to_log = [{'epoch': self.start_epoch, **metrics} for metrics in to_log]
+            logging_function(to_log)
+            wandb.log({'epoch': self.start_epoch}, commit=True, step=self.start_epoch)  # commit metrics
+            self.start_epoch += 1
 
         self.finish()
 
@@ -225,7 +234,7 @@ class Trainer:
                 if _stop_event.is_set():
                     break
                 idle_click()
-                time.sleep(5)
+                time.sleep(30)
 
         stop_idle_clicking_key = threading.Event()
         idle_clicker = threading.Thread(target=_clicker, args=(stop_idle_clicking_key,))
@@ -277,11 +286,8 @@ class Trainer:
 
             # load checkpoint locally
             self.load_checkpoint(load_dataset=False)
-            with open(self.ckpt_dir / 'metrics.json') as metrics_file:
-                metrics = json.load(metrics_file)
-                metrics[0]['duration_gpu'] = run_time / 3600
-                print(
-                    f'Trainer.train_agent_cloud: Received metrics: {metrics}')
+            self.start_epoch -= 1
+            metrics = [{"epoch": self.start_epoch, "duration_gpu": run_time / 3600}]
 
             # terminate clicker
             stop_idle_clicking_key.set()

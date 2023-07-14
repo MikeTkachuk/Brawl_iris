@@ -3,6 +3,8 @@ import time
 from io import BytesIO
 from threading import Thread, Event
 
+from botocore.exceptions import ClientError
+
 
 class LogListener:
     """
@@ -28,7 +30,7 @@ class LogListener:
         :return:
         """
         self._termination_key = Event()
-        self._thread = Thread(target=self._listen, args=(self,))
+        self._thread = Thread(target=self._listen, args=())
         self.storage_client = storage_client if storage_client is not None else self.storage_client
         if self.storage_client is None:
             raise RuntimeError("Storage client is undefined after init")
@@ -44,17 +46,20 @@ class LogListener:
         while True:
             if self._termination_key.is_set():
                 break
-            data = BytesIO()
-            self.storage_client.download_fileobj(
-                Bucket=self.bucket_name,
-                Key=self.path_to_listen,
-                Fileobj=data
-            )
-            data.seek(0)
-            to_log = data.read().decode('utf-8')
-            to_log_hash = hash(to_log)
-            if self._ref_hash != to_log_hash:
-                self._ref_hash = to_log_hash
-                self.log_func(json.loads(to_log))
+            try:
+                data = BytesIO()
+                self.storage_client.download_fileobj(
+                    Bucket=self.bucket_name,
+                    Key=self.path_to_listen,
+                    Fileobj=data
+                )
+                data.seek(0)
+                to_log = data.read().decode('utf-8')
+                to_log_hash = hash(to_log)
+                if self._ref_hash != to_log_hash:
+                    self._ref_hash = to_log_hash
+                    self.log_func(json.loads(to_log))
+            except ClientError:
+                pass
 
             time.sleep(self.interval)

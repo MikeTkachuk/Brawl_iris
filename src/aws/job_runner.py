@@ -4,8 +4,8 @@ import os
 
 import boto3
 
-from compute_instance import InstanceContext
-from logger import LogListener
+from src.aws.compute_instance import InstanceContext
+from src.aws.logger import LogListener
 
 
 class JobRunner:
@@ -43,8 +43,8 @@ class JobRunner:
 
         # upload code if not already
         if storage_client.list_objects_v2(Bucket=self.bucket_name,
-                                     Prefix=f"{self.run_prefix}/{repo_root.name}"
-                                     )['KeyCount'] < 3:
+                                          Prefix=f"{self.run_prefix}/{repo_root.name}"
+                                          )['KeyCount'] < 3:
             print('JobRunner.upload_code: code upload started')
             # upload code if needed
             name_on_bucket = f"{self.run_prefix}/{repo_root.name}"
