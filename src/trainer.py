@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -37,7 +38,7 @@ def logging_function(to_log):
 
 
 class Trainer:
-    def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
+    def __init__(self, cfg: DictConfig, cloud_instance=False) -> None:
         self.cloud_instance = cloud_instance
         self.cfg = cfg
         if not self.cloud_instance:
@@ -50,9 +51,8 @@ class Trainer:
             self.run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
             self.log_listener = LogListener(logging_function,
                                             self.cfg.cloud.log_path,
-                                            self.cfg.cloud.bucket_name)
-            boto3.client('s3').delete_object(Bucket=self.cfg.cloud.bucket_name,
-                                             Key=self.cfg.cloud.log_path)  # start logging from an empty file
+                                            self.cfg.cloud.bucket_name,
+                                            boto3.client('s3'))
 
         if self.cfg.common.seed is not None:
             set_seed(self.cfg.common.seed)
@@ -60,7 +60,9 @@ class Trainer:
         self.start_epoch = 1
         self.device = torch.device(self.cfg.common.device)
         if self.cloud_instance:
-            self.device = torch.device('cuda:0')
+            if not torch.cuda.is_available():
+                print("Warning CUDA unavailable on cloud instance")
+            self.device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
         self.ckpt_dir = Path('checkpoints')
         self.media_dir = Path('media')
@@ -105,6 +107,7 @@ class Trainer:
             env = train_env if self.cfg.training.should else test_env
         else:
             # if on cloud, env is only used for num_actions
+            env_actions = json.loads(self.cfg.env_actions)
             assert isinstance(env_actions, dict)
             env = namedtuple('Env', ['num_actions', 'num_continuous'])(**env_actions)
 
@@ -266,7 +269,7 @@ class Trainer:
                 f"--quiet",
 
                 # TODO (not important) save env_actions in config
-                f"sh {repo_root.name}/aws_setup/run.sh {self.run_prefix}",
+                f"sh {repo_root.name}/src/aws/run.sh {self.run_prefix}",
             ]
             job = JobRunner(self.cfg.cloud.bucket_name,
                             str(self.run_prefix),
@@ -443,7 +446,7 @@ class Trainer:
 
         return to_log
 
-    def _save_checkpoint(self, epoch: int, save_agent_only: bool) -> None:
+    def _save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
         torch.save(self.agent.state_dict(), self.ckpt_dir / 'last.pt')
         if not save_agent_only:
             torch.save(epoch, self.ckpt_dir / 'epoch.pt')
@@ -454,14 +457,15 @@ class Trainer:
             }, self.ckpt_dir / 'optimizer.pt')
             ckpt_dataset_dir = self.ckpt_dir / 'dataset'
             ckpt_dataset_dir.mkdir(exist_ok=True, parents=False)
-            self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir)
+            if save_dataset:
+                self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir)
             if self.cfg.evaluation.should:
                 torch.save(self.test_dataset.num_seen_episodes, self.ckpt_dir / 'num_seen_episodes_test_dataset.pt')
 
-    def save_checkpoint(self, epoch: int, save_agent_only: bool) -> None:
+    def save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
         tmp_checkpoint_dir = Path('checkpoints_tmp')
         shutil.copytree(src=self.ckpt_dir, dst=tmp_checkpoint_dir, ignore=shutil.ignore_patterns('dataset'))
-        self._save_checkpoint(epoch, save_agent_only)
+        self._save_checkpoint(epoch, save_agent_only, save_dataset=save_dataset)
         shutil.rmtree(tmp_checkpoint_dir)
 
     def load_checkpoint(self, load_dataset=True, load_episodes=True, agent_only=False) -> None:

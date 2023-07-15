@@ -16,7 +16,8 @@ from src.trainer import Trainer
 @hydra.main(config_path=r"../config", config_name="trainer")
 def main(cfg: DictConfig):
     shutil.copytree(r'/home/ec2-user/checkpoints', os.getcwd() + r'/checkpoints')
-    trainer = Trainer(cfg, cloud_instance=True, env_actions=json.loads(str(cfg.env_actions)))
+    trainer = Trainer(cfg, cloud_instance=True)
+    trainer.run_prefix = cfg.run_prefix
     trainer.load_checkpoint()
     trainer.start_epoch -= 1  # negates increment in load_checkpoint()
 
@@ -27,9 +28,10 @@ def main(cfg: DictConfig):
         with open(metrics_file_path, 'w') as metrics_file:
             json.dump(metrics, metrics_file)
         os.system(f"aws s3 cp {metrics_file_path} s3://{cfg.cloud.bucket_name}/{cfg.cloud.log_path}")
-
-    trainer.save_checkpoint(trainer.start_epoch + cfg.training.epochs_per_job - 1, save_agent_only=False)
-    shutil.copytree(os.getcwd() + r'/checkpoints', r'/home/ec2-user/checkpoints', dirs_exist_ok=True)
+        trainer.save_checkpoint(epoch, save_agent_only=False, save_dataset=False)
+        os.system(f'aws s3 cp checkpoints s3://brawl-stars-iris/{trainer.run_prefix}/checkpoints '
+                  f'--recursive '
+                  f'--exclude "dataset/*"')
 
 
 if __name__ == "__main__":

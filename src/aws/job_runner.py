@@ -1,6 +1,7 @@
 import time
 from pathlib import Path
 import os
+from typing import Iterable, Union
 
 import boto3
 
@@ -14,8 +15,8 @@ class JobRunner:
                  run_prefix: str,
                  instance_id: str,
                  region_name: str,
-                 ssh_file_path,
-                 commands,
+                 ssh_file_path: Union[Path, str],
+                 commands: Iterable[str],
                  logger: LogListener = None
                  ):
         """
@@ -53,6 +54,7 @@ class JobRunner:
                       f'--exclude ".idea/*" '
                       f'--exclude "results/*" '
                       f'--exclude "assets/*" '
+                      f'--exclude "src/outputs/*" '
                       f'--recursive '
                       f'--quiet')
             print('JobRunner.upload_code: code upload finished')
