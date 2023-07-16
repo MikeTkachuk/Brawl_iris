@@ -74,6 +74,7 @@ class Trainer:
         config_dir.mkdir(exist_ok=False, parents=False)
         shutil.copy('.hydra/config.yaml', config_path)
         self.ckpt_dir.mkdir(exist_ok=True, parents=False)
+        (self.ckpt_dir / 'dataset').mkdir(exist_ok=True, parents=False)
         self.media_dir.mkdir(exist_ok=False, parents=False)
         self.episode_dir.mkdir(exist_ok=False, parents=False)
         self.reconstructions_dir.mkdir(exist_ok=False, parents=False)
@@ -129,12 +130,14 @@ class Trainer:
                                                        lr=self.cfg.training.learning_rate)
 
         if not self.cloud_instance:
-            if self.cfg.initialization.storage_prefix is not None:
+            if self.cfg.initialization.storage_prefix:
+                print(f'trainer.init: fetching weights from {self.cfg.initialization.storage_prefix}')
                 os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/'
                           f'{self.cfg.initialization.storage_prefix}/checkpoints/last.pt '
                           f'{self.ckpt_dir / "last.pt"}')
-                self.cfg.initialization.path_to_checkpoint = self.ckpt_dir / "last.pt"
-            if self.cfg.initialization.path_to_checkpoint is not None:
+                self.cfg.initialization.path_to_checkpoint = str(self.ckpt_dir / "last.pt")
+            if self.cfg.initialization.path_to_checkpoint:
+                print(f'trainer.init: loading weights from {self.cfg.initialization.path_to_checkpoint}')
                 self.agent.load(**self.cfg.initialization, device=self.device)
 
             if self.cfg.common.resume:
