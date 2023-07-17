@@ -89,6 +89,7 @@ class Encoder(nn.Module):
                                         kernel_size=3,
                                         stride=1,
                                         padding=1)
+        print(f"nets.Encoder: shape of latent is {self(torch.zeros(1, config.in_channels, config.resolution, config.resolution)).shape}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
 
@@ -188,7 +189,8 @@ class Decoder(nn.Module):
                             padding=2)
         )
 
-        print(f"nets.Decoder: {self(torch.zeros(1, 512, 8, 8)).shape}")
+        _low_res = config.resolution // 2 ** (self.num_resolutions - 1 + 1)
+        print(f"nets.Decoder: {self(torch.zeros(1, config.z_channels, _low_res, _low_res)).shape}")
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         temb = None  # timestep embedding

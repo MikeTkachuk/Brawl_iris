@@ -3,6 +3,8 @@ import time
 from io import BytesIO
 from threading import Thread, Event
 
+import botocore.exceptions
+
 
 class LogListener:
     """
@@ -59,7 +61,8 @@ class LogListener:
                 if self._ref_hash != to_log_hash:
                     self._ref_hash = to_log_hash
                     self.log_func(json.loads(to_log))
-            except Exception:
-                pass
+            except Exception as e:
+                if not isinstance(e, botocore.exceptions.ClientError):
+                    print(f"logger._listen encountered: {e}")
 
             time.sleep(self.interval)
