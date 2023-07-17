@@ -48,7 +48,8 @@ class Trainer:
                 resume=True,
                 **self.cfg.wandb
             )
-            self.run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
+            self.run_prefix = Path(
+                '_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
             self.log_listener = LogListener(logging_function,
                                             self.cfg.cloud.log_path,
                                             self.cfg.cloud.bucket_name,
@@ -123,7 +124,8 @@ class Trainer:
         print(f'{sum(p.numel() for p in self.agent.world_model.parameters())} parameters in agent.world_model')
         print(f'{sum(p.numel() for p in self.agent.actor_critic.parameters())} parameters in agent.actor_critic')
 
-        self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(), lr=self.cfg.training.learning_rate)
+        self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(),
+                                                    lr=self.cfg.training.learning_rate)
         self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
                                                          self.cfg.training.world_model.weight_decay)
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
@@ -167,7 +169,8 @@ class Trainer:
             to_log = []
             if self.cfg.training.should:
                 if self.start_epoch <= self.cfg.collection.train.stop_after_epochs:
-                    to_log += self.train_collector.collect(self.agent, self.start_epoch, **self.cfg.collection.train.config)
+                    to_log += self.train_collector.collect(self.agent, self.start_epoch,
+                                                           **self.cfg.collection.train.config)
 
                 if self.cfg.training.on_cloud:
                     to_log += self.train_agent_cloud(self.start_epoch)
@@ -258,7 +261,6 @@ class Trainer:
             epoch > cfg_world_model.start_after_epochs,
             epoch > cfg_actor_critic.start_after_epochs
         ]):
-
             idle_clicker.start()
 
             self.save_checkpoint(epoch, save_agent_only=False)
