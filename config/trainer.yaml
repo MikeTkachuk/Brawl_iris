@@ -12,7 +12,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "eve_showdown_pretrain"
+  name: "eve_showdown_pretrain_fix"
   group: null
   tags: null
   notes: null
@@ -58,32 +58,33 @@ cloud:
   bucket_name: "brawl-stars-iris"
   instance_id: "i-0e9cb879b7a6f87c7"
   key_file: "C:\\Users\\Mykhailo_Tkachuk\\keypair1.pem"
-  log_path: "logs/metrics.json"  # used for logging
+  log_metrics: "logs/metrics.json"  # used for logging
+  log_reconstruction: "logs/reconstruction.jpg"  # used for logging
 
 training:
   should: True
   on_cloud: True
-  epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 0.0001
+  epochs_per_job: 50 # number of epochs to be run per job submission
+  learning_rate: 0.0005
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
     grad_acc_steps: 1
     max_grad_norm: 10.0
-    start_after_epochs: 10
+    start_after_epochs: 0
     steps_per_epoch: 200
   world_model:
     batch_num_samples: 8 # max 14 # old 64
     grad_acc_steps: 1
     max_grad_norm: 10.0
     weight_decay: 0.01
-    start_after_epochs: 25
+    start_after_epochs: 15
     steps_per_epoch: 200
   actor_critic:
     batch_num_samples: 4 # max 24 # old 64
     grad_acc_steps: 1
     max_grad_norm: 10.0
-    start_after_epochs: 50
+    start_after_epochs: 40
     steps_per_epoch: 200
     imagine_horizon: ${common.sequence_length}
     burn_in: 20

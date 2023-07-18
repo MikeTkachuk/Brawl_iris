@@ -23,7 +23,7 @@ def main(cfg: DictConfig):
     cfg.tokenizer.embed_dim = 256
     cfg.tokenizer.encoder.config.z_channels = 256
     cfg.tokenizer.encoder.config.ch = 16
-    cfg.tokenizer.encoder.config.ch_mult = [1, 2, 2, 3, 4, 4, 4]
+    cfg.tokenizer.encoder.config.ch_mult = [1, 2, 4, 4, 6, 8]
     cfg.tokenizer.encoder.config.num_res_blocks = 1
 
     cfg.world_model.num_layers = 10

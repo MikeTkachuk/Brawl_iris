@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict, namedtuple
 from functools import partial
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -15,6 +16,7 @@ import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
+from PIL import Image
 
 from src.agent import Agent
 from src.aws.job_runner import JobRunner
@@ -31,10 +33,22 @@ from src.aws.logger import LogListener
 import boto3
 
 
-def logging_function(to_log):
+def log_metrics(to_log, step=None, name=None):
+    if isinstance(to_log, bytes):
+        to_log = json.loads(to_log.decode('utf-8'))
     for i in range(len(to_log)):
         print("Parsed and logged: ", to_log[i])
         wandb.log(to_log[i], step=to_log[i].get("epoch"))
+
+
+def log_image(to_log, step=None, name=None):
+    name = 'image' if name is None else name
+    if isinstance(to_log, bytes):
+        img_io = BytesIO()
+        img_io.write(to_log)
+        to_log = Image.open(img_io)
+    print(f"Parsed and logged: {name} at step {step}")
+    wandb.log({name: wandb.Image(to_log)}, step=step)
 
 
 class Trainer:
@@ -50,10 +64,15 @@ class Trainer:
             )
             self.run_prefix = Path(
                 '_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
-            self.log_listener = LogListener(logging_function,
-                                            self.cfg.cloud.log_path,
+            self.log_listeners = [LogListener(log_metrics,
+                                            self.cfg.cloud.log_metrics,
                                             self.cfg.cloud.bucket_name,
-                                            boto3.client('s3'))
+                                            boto3.client('s3')),
+                                  LogListener(log_image,
+                                              self.cfg.cloud.log_reconstruction,
+                                              self.cfg.cloud.bucket_name,
+                                              boto3.client('s3')),
+                                  ]
 
         if self.cfg.common.seed is not None:
             set_seed(self.cfg.common.seed)
@@ -187,7 +206,7 @@ class Trainer:
 
             to_log.append({'duration': (time.time() - start_time) / 3600})
             to_log = [{'epoch': self.start_epoch, **metrics} for metrics in to_log]
-            logging_function(to_log)
+            log_metrics(to_log)
             wandb.log({'epoch': self.start_epoch}, commit=True, step=self.start_epoch)  # commit metrics
             self.start_epoch += 1
 
@@ -282,7 +301,7 @@ class Trainer:
                             self.cfg.cloud.region_name,
                             self.cfg.cloud.key_file,
                             job_commands,
-                            self.log_listener
+                            self.log_listeners
                             )
 
             run_time = job.run()

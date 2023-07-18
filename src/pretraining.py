@@ -10,7 +10,7 @@ import boto3
 from src.trainer import Trainer
 from src.aws.job_runner import JobRunner
 from src.aws.logger import LogListener
-from src.trainer import logging_function
+from src.trainer import log_metrics, log_image
 
 DATA_PREFIX = "pretrain_data/eve/solo_showdown"
 
@@ -39,7 +39,12 @@ def main(cfg: DictConfig):
     trainer.prepare_job()
 
     s3_client = boto3.client('s3')
-    logger = LogListener(logging_function, cfg.cloud.log_path, cfg.cloud.bucket_name, s3_client)
+    logger_metrics = LogListener(log_metrics, cfg.cloud.log_metrics, cfg.cloud.bucket_name, s3_client)
+    logger_reconstructions = LogListener(log_image,
+                                         cfg.cloud.log_reconstruction,
+                                         cfg.cloud.bucket_name,
+                                         s3_client,
+                                         'reconstructions')
     commands = [
         "rm -r Brawl_iris checkpoints",
         f"aws s3 cp \"s3://{cfg.cloud.bucket_name}/{DATA_PREFIX}\" /home/ec2-user/{DATA_PREFIX} --recursive --quiet",
@@ -55,9 +60,11 @@ def main(cfg: DictConfig):
                            cfg.cloud.region_name,
                            cfg.cloud.key_file,
                            commands,
-                           logger,
+                           [logger_metrics, logger_reconstructions],
                            )
     job_runner.run()
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

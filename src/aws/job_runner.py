@@ -17,7 +17,7 @@ class JobRunner:
                  region_name: str,
                  ssh_file_path: Union[Path, str],
                  commands: Iterable[str],
-                 logger: LogListener = None
+                 loggers: Iterable[LogListener] = None
                  ):
         """
 
@@ -27,7 +27,7 @@ class JobRunner:
         :param region_name:
         :param ssh_file_path:
         :param commands: list of strings. Will be executed in the order provided.
-        :param logger: optional instance of log listener.
+        :param loggers: optional iterable of log listeners. starts every listener on job run.
         """
         self.bucket_name = bucket_name
         self.run_prefix = run_prefix
@@ -35,7 +35,7 @@ class JobRunner:
         self.instance_context = InstanceContext(instance_id, region_name)
         self.ssh_file_path = ssh_file_path
         self.commands = commands
-        self.logger = logger
+        self.loggers = loggers
 
     def upload_code(self, storage_client=None):
         if storage_client is None:
@@ -63,7 +63,8 @@ class JobRunner:
 
     def init_job(self):
         s3_client = boto3.client('s3')
-        self.logger.init(s3_client)
+        for logger in self.loggers:
+            logger.init(s3_client)
         self.upload_code(s3_client)
 
     def run(self):
@@ -71,15 +72,16 @@ class JobRunner:
         self.init_job()
         with self.instance_context:
             self.instance_context.connect(self.ssh_file_path)
-            if self.logger is not None:
-                self.logger.init()
-                self.logger.start()
+            if self.loggers is not None:
+                for logger in self.loggers:
+                    logger.start()
 
             time.sleep(5)  # prevents unfinished initializations
             for command in self.commands:
                 self.instance_context.exec_command(command)
 
-            if self.logger is not None:
-                self.logger.stop()
+            if self.loggers is not None:
+                for logger in self.loggers:
+                    logger.stop()
 
         return self.instance_context.session_time
