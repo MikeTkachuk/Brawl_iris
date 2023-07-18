@@ -27,16 +27,20 @@ class LogListener:
         self.storage_client.delete_object(Bucket=self.bucket_name,
                                           Key=self.path_to_listen)  # cleanup log files from prev run
 
-    def init(self, storage_client=None):
+    def init(self, storage_client=None, step=None):
         """
           Listener needs to be init before each start() call
 
-        :param storage_client: s3 storage client. should be set here or in __init__
+        :param storage_client: optionally update s3 storage client
+        :param step: optionally updates logger step
         :return:
         """
         self._termination_key = Event()
         self._thread = Thread(target=self._listen, args=())
-        self.storage_client = storage_client if storage_client is not None else self.storage_client
+        if storage_client is not None:
+            self.storage_client = storage_client
+        if step is not None:
+            self._counter = step
 
     def start(self):
         self._thread.start()

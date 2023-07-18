@@ -134,6 +134,12 @@ class EpisodesDataset:
     def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
         assert directory.is_dir()
         episode_ids = sorted([int(p.stem) for p in directory.iterdir()])
+
+        if not len(episode_ids):
+            self.disk_episodes = deque()
+            self.num_seen_episodes = 0
+            return
+
         self.disk_episodes = deque(episode_ids)
         self.num_seen_episodes = episode_ids[-1] + 1
         if load_episodes:

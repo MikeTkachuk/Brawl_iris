@@ -26,6 +26,8 @@ def main(cfg: DictConfig):
 
     # train code
     for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
+        print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job}")
+
         metrics = trainer.train_agent(epoch)
 
         # save metrics
@@ -35,8 +37,8 @@ def main(cfg: DictConfig):
 
         # save reconstructions
         reconstruction_path = Path(cfg.cloud.log_reconstruction).name
-        episode = trainer.train_dataset.get_episode(random.randint(0, len(trainer.train_dataset)))
-        obs = episode.observations[len(episode) // 2].to(trainer.device).unsqueeze(0).float() / 255.0
+        episode = trainer.train_dataset.get_episode(random.randint(0, len(trainer.train_dataset)-1))
+        obs = episode.observations[int(len(episode) / random.uniform(1.2, 4))].to(trainer.device).unsqueeze(0).float() / 255.0
         with torch.no_grad():
             reconstruction = trainer.agent.tokenizer.encode_decode(obs, True, True)
         reconstruction = reconstruction.detach()

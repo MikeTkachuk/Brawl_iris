@@ -31,12 +31,16 @@ def main(cfg: DictConfig):
         resume=True,
         **cfg.wandb
     )
-    trainer = Trainer(cfg, cloud_instance=True)
     run_prefix = Path('_'.join([cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
-    repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/pretraining.py
+    trainer = Trainer(cfg, cloud_instance=True)
     trainer.run_prefix = run_prefix
+    repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/pretraining.py
+
+    trainer.from_pretrained()
+    if cfg.common.resume:
+        trainer.resume_run()
+
     trainer.save_checkpoint(trainer.start_epoch, save_agent_only=False)
-    trainer.prepare_job()
 
     s3_client = boto3.client('s3')
     logger_metrics = LogListener(log_metrics, cfg.cloud.log_metrics, cfg.cloud.bucket_name, s3_client)
@@ -45,6 +49,8 @@ def main(cfg: DictConfig):
                                          cfg.cloud.bucket_name,
                                          s3_client,
                                          'reconstructions')
+    trainer.log_listeners = [logger_metrics, logger_reconstructions]
+    trainer.prepare_job()
     commands = [
         "rm -r Brawl_iris checkpoints",
         f"aws s3 cp \"s3://{cfg.cloud.bucket_name}/{DATA_PREFIX}\" /home/ec2-user/{DATA_PREFIX} --recursive --quiet",
@@ -60,7 +66,7 @@ def main(cfg: DictConfig):
                            cfg.cloud.region_name,
                            cfg.cloud.key_file,
                            commands,
-                           [logger_metrics, logger_reconstructions],
+                           trainer.log_listeners,
                            )
     job_runner.run()
 

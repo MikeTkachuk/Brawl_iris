@@ -151,29 +151,39 @@ class Trainer:
                                                        lr=self.cfg.training.learning_rate)
 
         if not self.cloud_instance:
-            if self.cfg.initialization.storage_prefix:
-                print(f'trainer.init: fetching weights from {self.cfg.initialization.storage_prefix}')
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/'
-                          f'{self.cfg.initialization.storage_prefix}/checkpoints/last.pt '
-                          f'{self.ckpt_dir / "last.pt"}')
-                self.cfg.initialization.path_to_checkpoint = str(self.ckpt_dir / "last.pt")
-            if self.cfg.initialization.path_to_checkpoint:
-                print(f'trainer.init: loading weights from {self.cfg.initialization.path_to_checkpoint}')
-                self.agent.load(**self.cfg.initialization, device=self.device)
-
+            self.from_pretrained()
             if self.cfg.common.resume:
-                print("trainer.init: resume started")
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
-                          f'{self.ckpt_dir} '
-                          f'--recursive '
-                          f'--quiet'
-                          )
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
-                          f's3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints '
-                          f'--recursive '
-                          f'--quiet'
-                          )
-                self.load_checkpoint(load_episodes=False)
+                self.resume_run()
+
+    def from_pretrained(self):
+        if self.cfg.initialization.storage_prefix:
+            print(f'trainer.init: fetching weights from {self.cfg.initialization.storage_prefix}')
+            os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/'
+                      f'{self.cfg.initialization.storage_prefix}/checkpoints/last.pt '
+                      f'{self.ckpt_dir / "last.pt"}')
+            self.cfg.initialization.path_to_checkpoint = str(self.ckpt_dir / "last.pt")
+        if self.cfg.initialization.path_to_checkpoint:
+            print(f'trainer.init: loading weights from {self.cfg.initialization.path_to_checkpoint}')
+            self.agent.load(**self.cfg.initialization, device=self.device)
+        else:
+            print("Init weights unspecified. Skipping loading weights")
+
+    def resume_run(self):
+
+        assert self.cfg.common.resume
+
+        print(f"trainer.init: resume started from {self.cfg.common.resume}")
+        os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
+                  f'{self.ckpt_dir} '
+                  f'--recursive '
+                  f'--quiet'
+                  )
+        os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
+                  f's3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints '
+                  f'--recursive '
+                  f'--quiet'
+                  )
+        self.load_checkpoint(load_episodes=False)
 
     def benchmark(self):
         for i in range(20):
@@ -213,6 +223,11 @@ class Trainer:
         self.finish()
 
     def prepare_job(self):
+        # init loggers
+        for logger in self.log_listeners:
+            logger.init(step=self.start_epoch)
+
+        # update checkpoint
         s3_client = boto3.client(
             's3'
         )
