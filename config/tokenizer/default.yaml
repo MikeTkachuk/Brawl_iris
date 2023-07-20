@@ -6,15 +6,25 @@ encoder:
   _target_: src.models.tokenizer.Encoder
   config:
     _target_: src.models.tokenizer.EncoderDecoderConfig
-    resolution: 256
+    resolution: 192
     in_channels: 3
     z_channels: 256
     ch: 16
-    ch_mult: [1, 2, 4, 4, 6, 8]
+    ch_mult: [1, 2, 2, 3, 4]
     num_res_blocks: 1
-    attn_resolutions: [8, 16]
+    attn_resolutions: []
     out_ch: 3
     dropout: 0.0
 decoder:
   _target_: src.models.tokenizer.Decoder
-  config: ${..encoder.config}
+  config:
+    _target_: src.models.tokenizer.EncoderDecoderConfig
+    resolution: ${...encoder.config.resolution}
+    in_channels: ${...encoder.config.in_channels}
+    z_channels: ${...encoder.config.z_channels}
+    ch: 48
+    ch_mult: [ 1, 2, 4, 4, 5]
+    num_res_blocks: 2
+    attn_resolutions: [ 8, ]
+    out_ch: ${...encoder.config.out_ch}
+    dropout: 0.0
