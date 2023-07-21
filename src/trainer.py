@@ -51,6 +51,14 @@ def log_image(to_log, step=None, name=None):
     wandb.log({name: wandb.Image(to_log)}, step=step)
 
 
+def log_histogram(to_log, step=None, name=None):
+    if isinstance(to_log, bytes):
+        to_log = json.loads(to_log.decode('utf-8'))
+    step = to_log['step']
+    print(f"Parsed and logged: {name} at step {step}")
+    wandb.log({name: wandb.Histogram(to_log['data'])}, step=step)
+
+
 class Trainer:
     def __init__(self, cfg: DictConfig, cloud_instance=False) -> None:
         self.cloud_instance = cloud_instance
@@ -65,9 +73,9 @@ class Trainer:
             self.run_prefix = Path(
                 '_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
             self.log_listeners = [LogListener(log_metrics,
-                                            self.cfg.cloud.log_metrics,
-                                            self.cfg.cloud.bucket_name,
-                                            boto3.client('s3')),
+                                              self.cfg.cloud.log_metrics,
+                                              self.cfg.cloud.bucket_name,
+                                              boto3.client('s3')),
                                   LogListener(log_image,
                                               self.cfg.cloud.log_reconstruction,
                                               self.cfg.cloud.bucket_name,
@@ -143,8 +151,10 @@ class Trainer:
         print(f'{sum(p.numel() for p in self.agent.world_model.parameters())} parameters in agent.world_model')
         print(f'{sum(p.numel() for p in self.agent.actor_critic.parameters())} parameters in agent.actor_critic')
 
-        self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(),
-                                                    lr=self.cfg.training.learning_rate)
+        self.optimizer_tokenizer = torch.optim.AdamW(
+            self.agent.tokenizer.get_param_groups(self.cfg.training.tokenizer.weight_decay),
+            lr=self.cfg.training.learning_rate
+        )
         self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
                                                          self.cfg.training.world_model.weight_decay)
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),

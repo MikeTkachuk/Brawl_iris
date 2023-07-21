@@ -126,7 +126,7 @@ class WorldModel(nn.Module):
                                    mask_padding: torch.BoolTensor) -> Tuple[
         torch.Tensor, torch.Tensor, torch.Tensor]:
         assert torch.all(ends.sum(dim=1) <= 1)  # at most 1 done
-        mask_fill = torch.logical_not(mask_padding)
+        mask_fill = torch.logical_not(mask_padding)  # to be filled with -100 (default ignore index in F.cross_entropy)
         labels_observations = rearrange(obs_tokens.masked_fill(mask_fill.unsqueeze(-1).expand_as(obs_tokens), -100),
                                         'b t k -> b (t k)')[:, 1:]
         # TODO make more bins for rewards

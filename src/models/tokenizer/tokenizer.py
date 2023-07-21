@@ -34,8 +34,19 @@ class Tokenizer(nn.Module):
         self.embedding.weight.data.uniform_(-1.0 / vocab_size, 1.0 / vocab_size)
         self.lpips = LPIPS().eval() if with_lpips else None
 
+        self._token_histogram = None
+
     def __repr__(self) -> str:
         return "tokenizer"
+
+    def get_param_groups(self, weight_decay=0.01):
+        wd_parameters = ['embedding.weight']
+        optim_groups = [
+            {"params": [self.get_parameter(param) for param in wd_parameters], "weight_decay": weight_decay},
+            {"params": [param for param_name, param in self.named_parameters()
+                        if param_name not in wd_parameters], "weight_decay": 0.0},
+        ]
+        return optim_groups
 
     def forward(self, x: torch.Tensor, should_preprocess: bool = False, should_postprocess: bool = False) -> Tuple[torch.Tensor]:
         outputs = self.encode(x, should_preprocess)
@@ -77,6 +88,10 @@ class Tokenizer(nn.Module):
         z = z.reshape(*shape[:-3], *z.shape[1:])
         z_q = z_q.reshape(*shape[:-3], *z_q.shape[1:])
         tokens = tokens.reshape(*shape[:-3], -1)
+
+        if self.training:
+            for t in tokens.reshape(-1):
+                self._token_histogram[t] += 1
 
         return TokenizerEncoderOutput(z, z_q, tokens)
 

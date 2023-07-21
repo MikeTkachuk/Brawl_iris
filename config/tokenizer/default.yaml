@@ -23,8 +23,8 @@ decoder:
     in_channels: ${...encoder.config.in_channels}
     z_channels: ${...encoder.config.z_channels}
     ch: 48
-    ch_mult: [ 1, 2, 4, 4, 5]
-    num_res_blocks: 2
-    attn_resolutions: [ 8, ]
+    ch_mult: [1, 2, 4, 4, 5]
+    num_res_blocks: 1
+    attn_resolutions: [12,]
     out_ch: ${...encoder.config.out_ch}
     dropout: 0.0

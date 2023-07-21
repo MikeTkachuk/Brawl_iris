@@ -1,5 +1,6 @@
 import shutil
 import hydra
+import torch
 from omegaconf import DictConfig
 
 from src.trainer import Trainer
@@ -19,26 +20,29 @@ order of things to do:
 def main(cfg: DictConfig):
     shutil.copytree(r"C:\Users\Mykhailo_Tkachuk\PycharmProjects\Brawl-Stars-AI\outputs\2023-07-15\19-41-49\checkpoints",
                     "checkpoints", dirs_exist_ok=True)
-    cfg.tokenizer.vocab_size = 4096
-    cfg.tokenizer.embed_dim = 256
+    should_configure = True
 
-    cfg.tokenizer.encoder.config.resolution = 192
-    cfg.datasets.train.resolution = 192
+    if should_configure:
+        cfg.tokenizer.vocab_size = 8192
+        cfg.tokenizer.embed_dim = 256
 
-    cfg.tokenizer.encoder.config.z_channels = 256
-    cfg.tokenizer.encoder.config.ch = 16
-    cfg.tokenizer.encoder.config.ch_mult = [1, 2, 2, 3, 3]
-    cfg.tokenizer.encoder.config.num_res_blocks = 1
+        cfg.tokenizer.encoder.config.resolution = 192
+        cfg.datasets.train.resolution = 192
 
-    cfg.tokenizer.decoder.config.z_channels = 256
-    cfg.tokenizer.decoder.config.ch = 16
-    cfg.tokenizer.decoder.config.ch_mult = [1, 2, 3, 3, 4]
-    cfg.tokenizer.decoder.config.num_res_blocks = 1
+        cfg.tokenizer.encoder.config.z_channels = 256
+        cfg.tokenizer.encoder.config.ch = 16
+        cfg.tokenizer.encoder.config.ch_mult = [1, 2, 2, 3, 4]
+        cfg.tokenizer.encoder.config.num_res_blocks = 1
 
-    cfg.world_model.num_layers = 10
-    cfg.world_model.embed_dim = 256
-    cfg.world_model.num_heads = 4
-    cfg.world_model.tokens_per_block = 37
+        cfg.tokenizer.decoder.config.z_channels = 256
+        cfg.tokenizer.decoder.config.ch = 48
+        cfg.tokenizer.decoder.config.ch_mult = [1, 2, 4, 4, 5]
+        cfg.tokenizer.decoder.config.num_res_blocks = 1
+
+        cfg.world_model.num_layers = 10
+        cfg.world_model.embed_dim = 256
+        cfg.world_model.num_heads = 4
+        cfg.world_model.tokens_per_block = 37
 
     def configure_for_benchmark():
         cfg.training.tokenizer.steps_per_epoch = 4

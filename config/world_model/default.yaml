@@ -1,5 +1,5 @@
 _target_: src.models.TransformerConfig
-tokens_per_block: 17
+tokens_per_block: 37
 max_blocks: 20
 attention: 'causal'
 num_layers: 10
