@@ -75,13 +75,13 @@ class JobRunner:
             if self.loggers is not None:
                 for logger in self.loggers:
                     logger.start()
-
-            time.sleep(5)  # prevents unfinished initializations
-            for command in self.commands:
-                self.instance_context.exec_command(command)
-
-            if self.loggers is not None:
-                for logger in self.loggers:
-                    logger.stop()
+            try:
+                time.sleep(5)  # prevents unfinished initializations
+                for command in self.commands:
+                    self.instance_context.exec_command(command)
+            finally:
+                if self.loggers is not None:
+                    for logger in self.loggers:
+                        logger.stop()
 
         return self.instance_context.session_time

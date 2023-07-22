@@ -21,11 +21,11 @@ def before_epoch(trainer: Trainer, epoch):
 
 def after_epoch(trainer: Trainer, epoch, metrics=None):
     # save tokenizer vocab norms
-    tokenizer_vocab_norms_path = Path(trainer.cfg.cloud.log_tokenizer_vocab)
-    vocab_norm = torch.norm(trainer.agent.tokenizer.embedding.weight, dim=-1)
+    tokenizer_vocab_norms_path = Path(trainer.cfg.cloud.log_tokenizer_vocab).name
+    vocab_norm = torch.norm(trainer.agent.tokenizer.embedding.weight, dim=-1).detach().cpu()
     with open(tokenizer_vocab_norms_path, 'w') as tok_voc_file:
         json.dump({'step': epoch,
-                   'data': vocab_norm.detach().cpu().numpy().tolist()},
+                   'data': vocab_norm.numpy().tolist()},
                   tok_voc_file)
 
     norm_vs_occurrence = torch.stack([vocab_norm, trainer.agent.tokenizer._token_histogram], dim=0)
@@ -42,15 +42,15 @@ def after_epoch(trainer: Trainer, epoch, metrics=None):
     batch = trainer.train_dataset.sample_batch(1, 1)
     obs = batch['observations'][0].to(trainer.device)
     with torch.no_grad():
-        reconstruction = trainer.agent.tokenizer.encode_decode(obs, True, True)
-    reconstruction = reconstruction.detach()
-    reconstruction = torch.cat([obs, reconstruction], -1).cpu().mul(255).clamp(0, 255).to(torch.uint8)[0]
-    reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=2.5)
-    write_jpeg(reconstruction, str(reconstruction_path))
+        reconstruction_q = trainer.agent.tokenizer.encode_decode(obs, True, True).detach()
+        reconstruction = trainer.agent.tokenizer(obs, True, True)[-1].detach()
+    reconstruction = torch.cat([obs, reconstruction, reconstruction_q], -2).cpu().mul(255).clamp(0, 255).to(torch.uint8)
+    reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=(1.0,2.0))
+    write_jpeg(reconstruction[0], str(reconstruction_path))
 
     os.system(f"aws s3 cp {reconstruction_path} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_reconstruction}")
     os.system(f"aws s3 cp {metrics_file_path} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_metrics}")
-    os.system(f"aws s3 cp {tok_voc_file} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_tokenizer_vocab}")
+    os.system(f"aws s3 cp {tokenizer_vocab_norms_path} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_tokenizer_vocab}")
     trainer.save_checkpoint(epoch, save_agent_only=False, save_dataset=False)
     os.system(f'aws s3 cp checkpoints s3://brawl-stars-iris/{trainer.run_prefix}/checkpoints '
               f'--recursive '

@@ -23,7 +23,8 @@ class TokenizerEncoderOutput:
 
 
 class Tokenizer(nn.Module):
-    def __init__(self, vocab_size: int, embed_dim: int, encoder: Encoder, decoder: Decoder, with_lpips: bool = True) -> None:
+    def __init__(self, vocab_size: int, embed_dim: int, encoder: Encoder, decoder: Decoder,
+                 with_lpips: bool = True) -> None:
         super().__init__()
         self.vocab_size = vocab_size
         self.encoder = encoder
@@ -48,9 +49,14 @@ class Tokenizer(nn.Module):
         ]
         return optim_groups
 
-    def forward(self, x: torch.Tensor, should_preprocess: bool = False, should_postprocess: bool = False) -> Tuple[torch.Tensor]:
+    def forward(self, x: torch.Tensor, should_preprocess: bool = False, should_postprocess: bool = False) -> Tuple[
+        torch.Tensor]:
         outputs = self.encode(x, should_preprocess)
-        decoder_input = outputs.z + (outputs.z_quantized - outputs.z).detach()
+        # decoder_input = outputs.z + (outputs.z_quantized - outputs.z).detach()
+        normed_z = outputs.z / torch.norm(outputs.z, dim=1, keepdim=True)
+        norm_z_quant = torch.norm(outputs.z_quantized, dim=1, keepdim=True)
+        normed_z_quant = outputs.z_quantized / norm_z_quant
+        decoder_input = (normed_z + (normed_z_quant - normed_z).detach()) * norm_z_quant
         reconstructions = self.decode(decoder_input, should_postprocess)
         return outputs.z, outputs.z_quantized, reconstructions
 
@@ -62,13 +68,17 @@ class Tokenizer(nn.Module):
         # Codebook loss. Notes:
         # - beta position is different from taming and identical to original VQVAE paper
         # - VQVAE uses 0.25 by default
-        beta = 1.0
-        commitment_loss = (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
+        beta = 0.25
+        # commitment_loss = (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
+        commitment_loss = (1 + beta) - torch.cosine_similarity(z.detach(), z_quantized, dim=1).mean() - \
+                           beta * torch.cosine_similarity(z, z_quantized.detach(), dim=1).mean()
 
         reconstruction_loss = torch.abs(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
 
-        return LossWithIntermediateLosses(commitment_loss=commitment_loss, reconstruction_loss=reconstruction_loss, perceptual_loss=perceptual_loss)
+        return LossWithIntermediateLosses(commitment_loss=commitment_loss,
+                                          reconstruction_loss=reconstruction_loss,
+                                          perceptual_loss=perceptual_loss)
 
     def encode(self, x: torch.Tensor, should_preprocess: bool = False) -> TokenizerEncoderOutput:
         if should_preprocess:
@@ -79,9 +89,11 @@ class Tokenizer(nn.Module):
         z = self.pre_quant_conv(z)
         b, e, h, w = z.shape
         z_flattened = rearrange(z, 'b e h w -> (b h w) e')
-        dist_to_embeddings = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + torch.sum(self.embedding.weight**2, dim=1) - 2 * torch.matmul(z_flattened, self.embedding.weight.t())
+        dist_to_embeddings = (z_flattened / (1E-8 + torch.norm(z_flattened, dim=1, keepdim=True))) @ (
+                self.embedding.weight / (1E-8 + torch.norm(self.embedding.weight, dim=1, keepdim=True))).T
+        # dist_to_embeddings = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + torch.sum(self.embedding.weight**2, dim=1) - 2 * torch.matmul(z_flattened, self.embedding.weight.t())
 
-        tokens = dist_to_embeddings.argmin(dim=-1)
+        tokens = dist_to_embeddings.argmax(dim=-1)
         z_q = rearrange(self.embedding(tokens), '(b h w) e -> b e h w', b=b, e=e, h=h, w=w).contiguous()
 
         # Reshape to original
@@ -89,7 +101,7 @@ class Tokenizer(nn.Module):
         z_q = z_q.reshape(*shape[:-3], *z_q.shape[1:])
         tokens = tokens.reshape(*shape[:-3], -1)
 
-        if self.training:
+        if self.training and self._token_histogram is not None:
             for t in tokens.reshape(-1):
                 self._token_histogram[t] += 1
 
@@ -106,7 +118,8 @@ class Tokenizer(nn.Module):
         return rec
 
     @torch.no_grad()
-    def encode_decode(self, x: torch.Tensor, should_preprocess: bool = False, should_postprocess: bool = False) -> torch.Tensor:
+    def encode_decode(self, x: torch.Tensor, should_preprocess: bool = False,
+                      should_postprocess: bool = False) -> torch.Tensor:
         z_q = self.encode(x, should_preprocess).z_quantized
         return self.decode(z_q, should_postprocess)
 

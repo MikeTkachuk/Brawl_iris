@@ -1,6 +1,6 @@
 _target_: src.models.tokenizer.Tokenizer
 
-vocab_size: 4096
+vocab_size: 2048
 embed_dim: 256
 encoder:
   _target_: src.models.tokenizer.Encoder
