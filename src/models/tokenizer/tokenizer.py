@@ -40,6 +40,10 @@ class Tokenizer(nn.Module):
     def __repr__(self) -> str:
         return "tokenizer"
 
+    @property
+    def normed_embedding(self):
+        return self.embedding.weight / (1E-8 + torch.norm(self.embedding.weight, dim=1, keepdim=True))
+
     def get_param_groups(self, weight_decay=0.01):
         wd_parameters = ['embedding.weight']
         optim_groups = [
@@ -53,14 +57,14 @@ class Tokenizer(nn.Module):
         torch.Tensor]:
         outputs = self.encode(x, should_preprocess)
         # decoder_input = outputs.z + (outputs.z_quantized - outputs.z).detach()
-        normed_z = outputs.z / torch.norm(outputs.z, dim=1, keepdim=True)
-        norm_z_quant = torch.norm(outputs.z_quantized, dim=1, keepdim=True)
+        normed_z = outputs.z / (1E-8 + torch.norm(outputs.z, dim=1, keepdim=True))
+        norm_z_quant = 1E-8 + torch.norm(outputs.z_quantized, dim=1, keepdim=True)
         normed_z_quant = outputs.z_quantized / norm_z_quant
         decoder_input = (normed_z + (normed_z_quant - normed_z).detach()) * norm_z_quant
         reconstructions = self.decode(decoder_input, should_postprocess)
         return outputs.z, outputs.z_quantized, reconstructions
 
-    def compute_loss(self, batch: Batch, **kwargs: Any) -> LossWithIntermediateLosses:
+    def compute_loss(self, batch: Batch, commitment_start_after_epochs: int, epoch: int, **kwargs: Any) -> LossWithIntermediateLosses:
         assert self.lpips is not None
         observations = self.preprocess_input(rearrange(batch['observations'], 'b t c h w -> (b t) c h w'))
         z, z_quantized, reconstructions = self(observations, should_preprocess=False, should_postprocess=False)
@@ -68,15 +72,23 @@ class Tokenizer(nn.Module):
         # Codebook loss. Notes:
         # - beta position is different from taming and identical to original VQVAE paper
         # - VQVAE uses 0.25 by default
-        beta = 0.25
+        beta = 0.25 if commitment_start_after_epochs < epoch else 0.0
         # commitment_loss = (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
         commitment_loss = (1 + beta) - torch.cosine_similarity(z.detach(), z_quantized, dim=1).mean() - \
                            beta * torch.cosine_similarity(z, z_quantized.detach(), dim=1).mean()
+
+        embedding_cosines = torch.tril(self.normed_embedding @ self.normed_embedding.T, diagonal=-1)
+        tolerance_mask = embedding_cosines > 0.3
+        if torch.count_nonzero(tolerance_mask) > 0:
+            orthogonality_loss = beta * embedding_cosines[tolerance_mask].mean()
+        else:
+            orthogonality_loss = torch.tensor(0.0)
 
         reconstruction_loss = torch.abs(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
 
         return LossWithIntermediateLosses(commitment_loss=commitment_loss,
+                                          orthogonality_loss=orthogonality_loss,
                                           reconstruction_loss=reconstruction_loss,
                                           perceptual_loss=perceptual_loss)
 

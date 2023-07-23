@@ -52,8 +52,7 @@ def main(cfg: DictConfig):
     logger_tokenizer_vocab = LogListener(log_histogram,
                                          cfg.cloud.log_tokenizer_vocab,
                                          cfg.cloud.bucket_name,
-                                         s3_client,
-                                         'tokenizer/train/vocab_norms')
+                                         s3_client)
     trainer.log_listeners = [logger_metrics, logger_reconstructions, logger_tokenizer_vocab]
     trainer.prepare_job()
     commands = [

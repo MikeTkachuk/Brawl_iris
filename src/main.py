@@ -1,7 +1,9 @@
 import shutil
 import hydra
 import torch
+import torchvision.io
 from omegaconf import DictConfig
+from torchvision.io import ImageReadMode
 
 from src.trainer import Trainer
 
@@ -49,63 +51,75 @@ def main(cfg: DictConfig):
         cfg.training.world_model.steps_per_epoch = 4
         cfg.training.actor_critic.steps_per_epoch = 4
         cfg.training.tokenizer.start_after_epochs = 0
-        cfg.training.world_model.start_after_epochs = 1000
-        cfg.training.actor_critic.start_after_epochs = 1000
-        cfg.training.tokenizer.batch_num_samples = 2
+        cfg.training.world_model.start_after_epochs = 0
+        cfg.training.actor_critic.start_after_epochs = 0
+        cfg.training.tokenizer.batch_num_samples = 1
         cfg.training.world_model.batch_num_samples = 1
         cfg.training.actor_critic.batch_num_samples = 1
 
     configure_for_benchmark()
     trainer = Trainer(cfg, cloud_instance=True)
     trainer.train_dataset.load_disk_checkpoint(trainer.ckpt_dir / 'dataset')
-    trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\Downloads\last.pt", device='cpu')
+    # trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\Downloads\last.pt", device='cpu')
 
-    batch = trainer.train_dataset.sample_batch(1, 1)
-    obs = batch['observations'][0].to(trainer.device)
-    with torch.no_grad():
-        reconstruction_q = trainer.agent.tokenizer.encode_decode(obs, True, True).detach()
-        reconstruction = trainer.agent.tokenizer(obs, True, True)[-1].detach()
-    reconstruction = torch.cat([obs, reconstruction, reconstruction_q], -2).cpu().mul(255).clamp(0, 255).to(torch.uint8)
-    print(reconstruction.shape)
-    reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=2.0)
-    print(reconstruction.shape)
+    for epoch in range(1, 2):
+        trainer.train_agent(epoch)
     exit()
 
     import matplotlib.pyplot as plt
     import numpy as np
 
-    def decode(tokens, feature_size=(6,6)):
+    def tok_2_emb(tokens):
+        return trainer.agent.tokenizer.embedding.weight[tokens]
+
+    def decode(tokens, feature_size=(6, 6)):
+        tokens = tokens.flatten()
         assert len(tokens) == np.prod(feature_size)
-        embs = trainer.agent.tokenizer.embedding.weight[tokens].T.reshape(1,256, *feature_size)
-        rec = trainer.agent.tokenizer.decode(embs, True).detach().numpy()[0].transpose(1, 2, 0)
+        embs = trainer.agent.tokenizer.embedding.weight[tokens].T.reshape(1, 256, *feature_size)
+        rec = trainer.agent.tokenizer.decode(embs, True)
         return rec
 
     def encode(img):
         if not isinstance(img, torch.Tensor):
-            img = torch.tensor(img.transpose(2,0,1)).unsqueeze(0)
+            img = torch.tensor(img.transpose(2, 0, 1)).unsqueeze(0)
         tokens = trainer.agent.tokenizer.encode(img, True).tokens
+        print(tokens)
         return tokens
 
-    batch = trainer.train_dataset.sample_batch(2,2)
-    obs = batch['observations']
-    brawl_tokens = [ 636,  636, 1191, 1209,  241,  593, 1252, 1191,  593, 1209,  593,  684,
-         684, 1191,  636,  636,  636, 1084, 1252, 1434, 1434, 1434, 1084,  684,
-        1209, 1434, 1252,  684, 1209,  684,  636, 1434,  636, 1434, 1084, 1084]
-    map_tokens = [1084,  636, 1434, 1209, 1434,  684, 1434, 1209,  241,  636, 1252, 1434,
-         636,  684, 1252, 1191,  636, 1084, 1191,  636,  241,  593, 1434,  684,
-         684,  636, 1434, 1209,  593, 1252, 1434, 1084,  241,  636,  636, 1434]
-    rec = decode([1084,636,684,1434], (2,2))
-    plt.imshow(rec)
-    plt.show()
-    for b in range(1):
-        for t in range(2):
-            plt.figure()
-            tokens = map_tokens
-            tokens[t*18:(t+1)*18] = brawl_tokens[t*18:(t+1)*18]
-            rec = decode(tokens)
-            plt.figure()
-            plt.imshow(rec)
-    plt.show()
+    def plot(img):
+        if len(img.shape) > 3:
+            img = img.reshape(img.shape[-3:])
+        if isinstance(img, torch.Tensor):
+            img = img.detach().numpy().transpose(1, 2, 0)
+
+        plt.imshow(img)
+
+    def token_cosine(token1, token2):
+        emb1 = trainer.agent.tokenizer.embedding.weight[token1]
+        emb2 = trainer.agent.tokenizer.embedding.weight[token2]
+        return torch.sum(emb1 * emb2, dim=1) / torch.norm(emb1, dim=1) / torch.norm(emb2, dim=1)
+
+    for i in range(4):
+        img = torchvision.io.read_image(fr"C:\Users\Mykhailo_Tkachuk\Downloads\reconstruction{i}_inpainted.png", ImageReadMode.RGB)[:, :192,
+              :192] / 255
+        img_orig = torchvision.io.read_image(fr"C:\Users\Mykhailo_Tkachuk\Downloads\reconstruction{i}.png", ImageReadMode.RGB)[:, :192,
+                   :192] / 255
+
+        img_tokens = encode(img.unsqueeze(0))
+        img_orig_tokens = encode(img_orig.unsqueeze(0))
+        mask = img_tokens != img_orig_tokens
+        mask_img = torch.repeat_interleave(mask.reshape(6, 6), 32, dim=1)
+        mask_img = torch.repeat_interleave(mask_img, 32, dim=0) / 2 + 0.5
+        plot(decode(img_tokens) * mask_img)
+        plt.figure(), plot(decode(img_orig_tokens) * mask_img)
+        print(img_tokens == img_orig_tokens)
+        print(img_tokens[mask])
+        print(img_orig_tokens[mask])
+        print(token_cosine(img_tokens[mask], img_orig_tokens[mask]))
+        print(tok_2_emb(img_tokens[mask])[:,:10])
+        print(tok_2_emb(img_orig_tokens[mask])[:,:10])
+        plt.show()
+
 
 if __name__ == "__main__":
     main()

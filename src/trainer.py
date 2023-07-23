@@ -55,8 +55,11 @@ def log_histogram(to_log, step=None, name=None):
     if isinstance(to_log, bytes):
         to_log = json.loads(to_log.decode('utf-8'))
     step = to_log['step']
-    print(f"Parsed and logged: {name} at step {step}")
-    wandb.log({name: wandb.Histogram(to_log['data'])}, step=step)
+    if not isinstance(to_log['data'], dict):
+        to_log['data'] = {name: to_log['data']}
+    for hist_name, hist_data in to_log['data'].items():
+        print(f"Parsed and logged: {hist_name} at step {step}")
+        wandb.log({hist_name: wandb.Histogram(hist_data)}, step=step)
 
 
 class Trainer:
@@ -361,7 +364,8 @@ class Trainer:
 
         if epoch > cfg_tokenizer.start_after_epochs:
             metrics_tokenizer = self.train_component(self.agent.tokenizer, self.optimizer_tokenizer, sequence_length=1,
-                                                     sample_from_start=True, sampling_weights=w, **cfg_tokenizer)
+                                                     sample_from_start=True, sampling_weights=w, epoch=epoch,
+                                                     **cfg_tokenizer)
         self.agent.tokenizer.eval()
 
         if epoch > cfg_world_model.start_after_epochs:
