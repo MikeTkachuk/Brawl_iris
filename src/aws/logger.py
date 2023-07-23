@@ -41,6 +41,7 @@ class LogListener:
             self.storage_client = storage_client
         if step is not None:
             self._counter = step
+        print(f'aws.logger.LogListener: listening {self.path_to_listen}. init at step {self._counter}')
 
     def start(self):
         self._thread.start()
@@ -70,5 +71,7 @@ class LogListener:
             except Exception as e:
                 if not isinstance(e, botocore.exceptions.ClientError):
                     print(f"logger._listen encountered: {e}")
+                if isinstance(e, KeyboardInterrupt):
+                    break
 
             time.sleep(self.interval)

@@ -1,5 +1,4 @@
 import os
-import random
 import sys
 
 sys.path.append(os.getcwd())
@@ -16,6 +15,36 @@ from torchvision.io import write_jpeg
 from src.trainer import Trainer
 
 
+def before_epoch(trainer: Trainer, epoch):
+    trainer.agent.tokenizer._token_histogram = torch.zeros(trainer.agent.tokenizer.vocab_size)
+
+
+def after_epoch(trainer: Trainer, epoch, metrics=None):
+    # save metrics
+    metrics_file_path = Path(trainer.cfg.cloud.log_metrics).name
+    with open(metrics_file_path, 'w') as metrics_file:
+        json.dump(metrics, metrics_file)
+
+    # save reconstructions
+    reconstruction_path = Path(trainer.cfg.cloud.log_reconstruction).name
+    batch = trainer.train_dataset.sample_batch(1, 1)
+    obs = batch['observations'][0].to(trainer.device)
+    with torch.no_grad():
+        reconstruction_q = trainer.agent.tokenizer.encode_decode(obs, True, True).detach()
+        reconstruction = trainer.agent.tokenizer(obs, True, True)[-1].detach()
+    reconstruction = torch.cat([obs, reconstruction, reconstruction_q], -2).cpu().mul(255).clamp(0, 255).to(torch.uint8)
+    reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=(1.0, 2.0))
+    write_jpeg(reconstruction[0], str(reconstruction_path))
+
+    os.system(
+        f"aws s3 cp {reconstruction_path} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_reconstruction}")
+    os.system(f"aws s3 cp {metrics_file_path} s3://{trainer.cfg.cloud.bucket_name}/{trainer.cfg.cloud.log_metrics}")
+    trainer.save_checkpoint(epoch, save_agent_only=False, save_dataset=False)
+    os.system(f'aws s3 cp checkpoints s3://brawl-stars-iris/{trainer.run_prefix}/checkpoints '
+              f'--recursive '
+              f'--exclude "dataset/*"')
+
+
 @hydra.main(config_path=r"../config", config_name="trainer")
 def main(cfg: DictConfig):
     shutil.copytree(r'/home/ec2-user/checkpoints', os.getcwd() + r'/checkpoints')
@@ -26,32 +55,12 @@ def main(cfg: DictConfig):
 
     # train code
     for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
+        before_epoch(trainer, epoch)
         print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job}")
 
         metrics = trainer.train_agent(epoch)
 
-        # save metrics
-        metrics_file_path = Path(cfg.cloud.log_metrics).name
-        with open(metrics_file_path, 'w') as metrics_file:
-            json.dump(metrics, metrics_file)
-
-        # save reconstructions
-        reconstruction_path = Path(cfg.cloud.log_reconstruction).name
-        episode = trainer.train_dataset.get_episode(random.randint(0, len(trainer.train_dataset)-1))
-        obs = episode.observations[int(len(episode) / random.uniform(1.2, 4))].to(trainer.device).unsqueeze(0).float() / 255.0
-        with torch.no_grad():
-            reconstruction = trainer.agent.tokenizer.encode_decode(obs, True, True)
-        reconstruction = reconstruction.detach()
-        reconstruction = torch.cat([obs, reconstruction], -1).cpu().mul(255).clamp(0, 255).to(torch.uint8)[0]
-        reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=2.5)
-        write_jpeg(reconstruction, str(reconstruction_path))
-
-        os.system(f"aws s3 cp {reconstruction_path} s3://{cfg.cloud.bucket_name}/{cfg.cloud.log_reconstruction}")
-        os.system(f"aws s3 cp {metrics_file_path} s3://{cfg.cloud.bucket_name}/{cfg.cloud.log_metrics}")
-        trainer.save_checkpoint(epoch, save_agent_only=False, save_dataset=False)
-        os.system(f'aws s3 cp checkpoints s3://brawl-stars-iris/{trainer.run_prefix}/checkpoints '
-                  f'--recursive '
-                  f'--exclude "dataset/*"')
+        after_epoch(trainer, epoch, metrics=metrics)
 
 
 if __name__ == "__main__":

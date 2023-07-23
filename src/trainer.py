@@ -51,6 +51,17 @@ def log_image(to_log, step=None, name=None):
     wandb.log({name: wandb.Image(to_log)}, step=step)
 
 
+def log_histogram(to_log, step=None, name=None):
+    if isinstance(to_log, bytes):
+        to_log = json.loads(to_log.decode('utf-8'))
+    step = to_log['step']
+    if not isinstance(to_log['data'], dict):
+        to_log['data'] = {name: to_log['data']}
+    for hist_name, hist_data in to_log['data'].items():
+        print(f"Parsed and logged: {hist_name} at step {step}")
+        wandb.log({hist_name: wandb.Histogram(hist_data)}, step=step)
+
+
 class Trainer:
     def __init__(self, cfg: DictConfig, cloud_instance=False) -> None:
         self.cloud_instance = cloud_instance
@@ -65,9 +76,9 @@ class Trainer:
             self.run_prefix = Path(
                 '_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
             self.log_listeners = [LogListener(log_metrics,
-                                            self.cfg.cloud.log_metrics,
-                                            self.cfg.cloud.bucket_name,
-                                            boto3.client('s3')),
+                                              self.cfg.cloud.log_metrics,
+                                              self.cfg.cloud.bucket_name,
+                                              boto3.client('s3')),
                                   LogListener(log_image,
                                               self.cfg.cloud.log_reconstruction,
                                               self.cfg.cloud.bucket_name,
