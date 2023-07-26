@@ -13,6 +13,7 @@ from src.dataset import Batch
 from .lpips import LPIPS
 from .nets import Encoder, Decoder
 from src.utils import LossWithIntermediateLosses
+from src.models.tokenizer.vocabulary import DynamicVocab
 
 
 @dataclass
@@ -29,13 +30,11 @@ class Tokenizer(nn.Module):
         self.vocab_size = vocab_size
         self.encoder = encoder
         self.pre_quant_conv = torch.nn.Conv2d(encoder.config.z_channels, embed_dim, 1)
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.embedding = DynamicVocab(vocab_size, embed_dim)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, decoder.config.z_channels, 1)
         self.decoder = decoder
         self.embedding.weight.data.uniform_(-1.0 / vocab_size, 1.0 / vocab_size)
         self.lpips = LPIPS().eval() if with_lpips else None
-
-        self._token_histogram = None
 
     def __repr__(self) -> str:
         return "tokenizer"
@@ -56,11 +55,18 @@ class Tokenizer(nn.Module):
     def forward(self, x: torch.Tensor, should_preprocess: bool = False, should_postprocess: bool = False) -> Tuple[
         torch.Tensor]:
         outputs = self.encode(x, should_preprocess)
-        # decoder_input = outputs.z + (outputs.z_quantized - outputs.z).detach()
-        normed_z = outputs.z / (1E-8 + torch.norm(outputs.z, dim=1, keepdim=True))
-        norm_z_quant = 1E-8 + torch.norm(outputs.z_quantized, dim=1, keepdim=True)
-        normed_z_quant = outputs.z_quantized / norm_z_quant
-        decoder_input = (normed_z + (normed_z_quant - normed_z).detach()) * norm_z_quant
+        # dst mode
+        decoder_input = outputs.z + (outputs.z_quantized - outputs.z).detach()
+
+        # angle mode
+        # normed_z = outputs.z / (1E-8 + torch.norm(outputs.z, dim=1, keepdim=True))
+        # norm_z_quant = 1E-8 + torch.norm(outputs.z_quantized, dim=1, keepdim=True)
+        # normed_z_quant = outputs.z_quantized / norm_z_quant
+        # decoder_input = (normed_z + (normed_z_quant - normed_z).detach()) * norm_z_quant
+
+        # no quant mode
+        # decoder_input = outputs.z
+
         reconstructions = self.decode(decoder_input, should_postprocess)
         return outputs.z, outputs.z_quantized, reconstructions
 
@@ -73,22 +79,30 @@ class Tokenizer(nn.Module):
         # - beta position is different from taming and identical to original VQVAE paper
         # - VQVAE uses 0.25 by default
         beta = 0.25 if commitment_start_after_epochs < epoch else 0.0
-        # commitment_loss = (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
-        commitment_loss = (1 + beta) - torch.cosine_similarity(z.detach(), z_quantized, dim=1).mean() - \
-                           beta * torch.cosine_similarity(z, z_quantized.detach(), dim=1).mean()
 
-        embedding_cosines = torch.tril(self.normed_embedding @ self.normed_embedding.T, diagonal=-1)
-        tolerance_mask = embedding_cosines > 0.3
-        if torch.count_nonzero(tolerance_mask) > 0:
-            orthogonality_loss = beta * embedding_cosines[tolerance_mask].mean()
-        else:
-            orthogonality_loss = torch.tensor(0.0)
+        # dst mode
+        commitment_loss = (z.detach() - z_quantized).pow(2).mean() + (z - z_quantized.detach()).pow(2).mean()
+
+        # angle mode
+        # commitment_loss = (1 + beta) - torch.cosine_similarity(z.detach(), z_quantized, dim=1).mean() - \
+        #                    beta * torch.cosine_similarity(z, z_quantized.detach(), dim=1).mean()
+        #
+        # embedding_cosines = torch.tril(self.normed_embedding @ self.normed_embedding.T, diagonal=-1)
+        # tolerance_mask = embedding_cosines > 0.3
+        # if torch.count_nonzero(tolerance_mask) > 0:
+        #     orthogonality_loss = beta * embedding_cosines[tolerance_mask].mean()
+        # else:
+        #     orthogonality_loss = torch.tensor(0.0)
+
+        # no quant mode
+        # orthogonality_loss = torch.tensor(0.0)
+        # commitment_loss = torch.tensor(0.0)
 
         reconstruction_loss = torch.abs(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
 
         return LossWithIntermediateLosses(commitment_loss=commitment_loss,
-                                          orthogonality_loss=orthogonality_loss,
+                                          # orthogonality_loss=orthogonality_loss,
                                           reconstruction_loss=reconstruction_loss,
                                           perceptual_loss=perceptual_loss)
 
@@ -101,21 +115,20 @@ class Tokenizer(nn.Module):
         z = self.pre_quant_conv(z)
         b, e, h, w = z.shape
         z_flattened = rearrange(z, 'b e h w -> (b h w) e')
-        dist_to_embeddings = (z_flattened / (1E-8 + torch.norm(z_flattened, dim=1, keepdim=True))) @ (
-                self.embedding.weight / (1E-8 + torch.norm(self.embedding.weight, dim=1, keepdim=True))).T
-        # dist_to_embeddings = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + torch.sum(self.embedding.weight**2, dim=1) - 2 * torch.matmul(z_flattened, self.embedding.weight.t())
 
-        tokens = dist_to_embeddings.argmax(dim=-1)
+
+        # angle mode
+        # dist_to_embeddings = (z_flattened / (1E-8 + torch.norm(z_flattened, dim=1, keepdim=True))) @ (
+        #         self.embedding.weight / (1E-8 + torch.norm(self.embedding.weight, dim=1, keepdim=True))).T
+
+        # dst mode
+        tokens = self.embedding.map_closest(z_flattened)
         z_q = rearrange(self.embedding(tokens), '(b h w) e -> b e h w', b=b, e=e, h=h, w=w).contiguous()
 
         # Reshape to original
         z = z.reshape(*shape[:-3], *z.shape[1:])
         z_q = z_q.reshape(*shape[:-3], *z_q.shape[1:])
         tokens = tokens.reshape(*shape[:-3], -1)
-
-        if self.training and self._token_histogram is not None:
-            for t in tokens.reshape(-1):
-                self._token_histogram[t] += 1
 
         return TokenizerEncoderOutput(z, z_q, tokens)
 

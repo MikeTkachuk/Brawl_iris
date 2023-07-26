@@ -62,6 +62,9 @@ def main(cfg: DictConfig):
     trainer.train_dataset.load_disk_checkpoint(trainer.ckpt_dir / 'dataset')
     # trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\Downloads\last.pt", device='cpu')
 
+    from src.utils import collect_embeddings
+    embs = collect_embeddings(trainer)
+
     for epoch in range(1, 2):
         trainer.train_agent(epoch)
     exit()

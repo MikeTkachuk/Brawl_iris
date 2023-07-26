@@ -7,6 +7,7 @@ import shutil
 import numpy as np
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from src.episode import Episode
 
@@ -155,3 +156,19 @@ def make_video(fname, fps, frames):
     for frame in frames:
         video.write(frame[:, :, ::-1])
     video.release()
+
+
+@torch.no_grad()
+def collect_embeddings(trainer, every_n_frame=5):
+    emb_list = []
+    for episode in tqdm(trainer.train_dataset.episodes, desc="Processed episodes:"):
+        episode_as_batch = trainer.train_dataset._collate_episodes_segments([episode])
+        episode_as_batch = trainer._to_device(episode_as_batch)
+
+        for i in range(0, len(episode), every_n_frame):
+            observation = episode_as_batch['observations'][0][[i]]
+            emb_list.append(trainer.agent.tokenizer.encode(observation, should_preprocess=True).z)
+
+    z_shape = emb_list[0].shape
+    output = torch.cat([emb.reshape(z_shape[1], -1) for emb in emb_list], dim=1).T
+    return output

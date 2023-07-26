@@ -13,10 +13,20 @@ from omegaconf import DictConfig
 from torchvision.io import write_jpeg
 
 from src.trainer import Trainer
+# from src.utils import collect_embeddings
 
 
 def before_epoch(trainer: Trainer, epoch):
-    trainer.agent.tokenizer._token_histogram = torch.zeros(trainer.agent.tokenizer.vocab_size)
+    trainer.agent.tokenizer.embedding.reset()
+
+    # # test emb collection
+    # if trainer.cfg.training.tokenizer.kmeans_after_epoch < epoch:
+    #     embeddings = collect_embeddings(trainer)
+    #     file_name = Path(f'embeddings_epoch_{epoch}.pt').name
+    #     torch.save(embeddings, str(file_name))
+    #     os.system(
+    #         f"aws s3 cp {file_name} s3://{trainer.cfg.cloud.bucket_name}/logs/{file_name}")
+    #     exit()
 
 
 def after_epoch(trainer: Trainer, epoch, metrics=None):
@@ -27,12 +37,12 @@ def after_epoch(trainer: Trainer, epoch, metrics=None):
         json.dump({'step': epoch,
                    'data': {
                        'tokenizer/train/vocab_norms': vocab_norm.numpy().tolist(),
-                       'tokenizer/train/vocab_frequency': trainer.agent.tokenizer._token_histogram.detach().cpu().numpy().tolist(),
+                       'tokenizer/train/vocab_frequency': trainer.agent.tokenizer.embedding._word_stats.counts.detach().cpu().numpy().tolist(),
                            },
                    },
                   tok_voc_file)
 
-    norm_vs_occurrence = torch.stack([vocab_norm, trainer.agent.tokenizer._token_histogram], dim=0)
+    norm_vs_occurrence = torch.stack([vocab_norm, trainer.agent.tokenizer.embedding._word_stats.counts], dim=0)
     norm_occurrence_correlation = torch.corrcoef(norm_vs_occurrence)[0, 1]
     metrics[0]['tokenizer/train/norm_occurrence_correlation'] = norm_occurrence_correlation.item()
 
