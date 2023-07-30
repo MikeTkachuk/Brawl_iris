@@ -1,5 +1,6 @@
 import os
 import sys
+from functools import partial
 
 sys.path.append(os.getcwd())
 
@@ -13,11 +14,28 @@ from omegaconf import DictConfig
 from torchvision.io import write_jpeg
 
 from src.trainer import Trainer
+
+
 # from src.utils import collect_embeddings
 
 
 def before_epoch(trainer: Trainer, epoch):
-    trainer.agent.tokenizer.embedding.reset()
+    if epoch > trainer.cfg.training.tokenizer.update_vocab_after_epochs:
+        if (epoch - 1 - trainer.cfg.training.tokenizer.update_vocab_after_epochs) % trainer.cfg.training.tokenizer.update_vocab_every_epochs == 0:
+            trainer.agent.tokenizer.embedding.step()
+            trainer.agent.tokenizer.embedding.reset()
+            trainer.optimizer_tokenizer.reset(name='table',
+                                              optimizer=torch.optim.Adam(
+                                                  [trainer.agent.tokenizer.get_param_groups()[0]],
+                                                  lr=trainer.cfg.training.learning_rate)
+                                              )  # avoids momentum rescale after vocab change
+            if trainer.lr_scheduler_tokenizer is not None:
+                scheduler = partial(torch.optim.lr_scheduler.OneCycleLR,
+                                    max_lr=trainer.cfg.training.learning_rate,
+                                    total_steps=trainer.cfg.training.tokenizer.steps_per_epoch * trainer.cfg.training.epochs_per_job,
+                                    pct_start=0.2,
+                                    )
+                trainer.lr_scheduler_tokenizer.reset('table', scheduler)
 
     # # test emb collection
     # if trainer.cfg.training.tokenizer.kmeans_after_epoch < epoch:
@@ -38,11 +56,13 @@ def after_epoch(trainer: Trainer, epoch, metrics=None):
                    'data': {
                        'tokenizer/train/vocab_norms': vocab_norm.numpy().tolist(),
                        'tokenizer/train/vocab_frequency': trainer.agent.tokenizer.embedding._word_stats.counts.detach().cpu().numpy().tolist(),
-                           },
+                       'tokenizer/train/vocab_intra_dst': trainer.agent.tokenizer.embedding._word_stats.distances.detach().cpu().numpy().tolist(),
+                            },
                    },
                   tok_voc_file)
 
-    norm_vs_occurrence = torch.stack([vocab_norm, trainer.agent.tokenizer.embedding._word_stats.counts], dim=0)
+    norm_vs_occurrence = torch.stack([vocab_norm, trainer.agent.tokenizer.embedding._word_stats.counts.detach().cpu()],
+                                     dim=0)
     norm_occurrence_correlation = torch.corrcoef(norm_vs_occurrence)[0, 1]
     metrics[0]['tokenizer/train/norm_occurrence_correlation'] = norm_occurrence_correlation.item()
 
@@ -84,7 +104,7 @@ def main(cfg: DictConfig):
     # train code
     for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
         before_epoch(trainer, epoch)
-        print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job}")
+        print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job - 1}")
 
         metrics = trainer.train_agent(epoch)
 

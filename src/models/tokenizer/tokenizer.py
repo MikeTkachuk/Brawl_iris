@@ -43,8 +43,8 @@ class Tokenizer(nn.Module):
     def normed_embedding(self):
         return self.embedding.weight / (1E-8 + torch.norm(self.embedding.weight, dim=1, keepdim=True))
 
-    def get_param_groups(self, weight_decay=0.01):
-        wd_parameters = ['embedding.weight']
+    def get_param_groups(self, weight_decay=0.0):
+        wd_parameters = ['embedding.table.weight']
         optim_groups = [
             {"params": [self.get_parameter(param) for param in wd_parameters], "weight_decay": weight_decay},
             {"params": [param for param_name, param in self.named_parameters()

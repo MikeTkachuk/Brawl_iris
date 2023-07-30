@@ -31,10 +31,10 @@ class Agent(nn.Module):
         agent_state_dict = torch.load(path_to_checkpoint, map_location=device)
         if load_tokenizer:
             self.tokenizer.load_state_dict(extract_state_dict(agent_state_dict, 'tokenizer'))
-        if load_world_model:
-            self.world_model.load_state_dict(extract_state_dict(agent_state_dict, 'world_model'))
-        if load_actor_critic:
-            self.actor_critic.load_state_dict(extract_state_dict(agent_state_dict, 'actor_critic'))
+        # if load_world_model:
+        #     self.world_model.load_state_dict(extract_state_dict(agent_state_dict, 'world_model'))
+        # if load_actor_critic:
+        #     self.actor_critic.load_state_dict(extract_state_dict(agent_state_dict, 'actor_critic'))
 
     def act(self, obs: torch.FloatTensor, should_sample: bool = True, temperature: float = 1.0) -> Tuple[torch.LongTensor, torch.FloatTensor]:
         input_ac = obs if self.actor_critic.use_original_obs else torch.clamp(

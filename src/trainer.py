@@ -29,6 +29,7 @@ from src.models.actor_critic import ActorCritic
 from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
 from src.aws.logger import LogListener
+from src.models.optimizer import Compose, ComposeScheduler
 
 import boto3
 
@@ -154,14 +155,11 @@ class Trainer:
         print(f'{sum(p.numel() for p in self.agent.world_model.parameters())} parameters in agent.world_model')
         print(f'{sum(p.numel() for p in self.agent.actor_critic.parameters())} parameters in agent.actor_critic')
 
-        self.optimizer_tokenizer = torch.optim.AdamW(
-            self.agent.tokenizer.get_param_groups(self.cfg.training.tokenizer.weight_decay),
-            lr=self.cfg.training.learning_rate
-        )
-        self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
-                                                         self.cfg.training.world_model.weight_decay)
-        self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
-                                                       lr=self.cfg.training.learning_rate)
+        self.optimizer_tokenizer = None
+        self.lr_scheduler_tokenizer = None
+        self.optimizer_world_model = None
+        self.optimizer_actor_critic = None
+        self.configure_optimizers()
 
         if not self.cloud_instance:
             self.from_pretrained()
@@ -197,6 +195,28 @@ class Trainer:
                   f'--quiet'
                   )
         self.load_checkpoint(load_episodes=False)
+
+    def configure_optimizers(self):
+        self.optimizer_tokenizer = Compose(
+            {'tokenizer': torch.optim.Adam(
+                [self.agent.tokenizer.get_param_groups()[1]],
+                lr=self.cfg.training.learning_rate
+            ),
+             'table': torch.optim.Adam([self.agent.tokenizer.get_param_groups()[0]],
+                                       lr=self.cfg.training.learning_rate)
+            })
+        scheduler = partial(torch.optim.lr_scheduler.OneCycleLR,
+                            max_lr=self.cfg.training.learning_rate,
+                            total_steps=self.cfg.training.tokenizer.steps_per_epoch * self.cfg.training.epochs_per_job,
+                            pct_start=0.2,
+                            )
+        self.lr_scheduler_tokenizer = ComposeScheduler(self.optimizer_tokenizer,
+                                                       {'tokenizer': scheduler, 'table': scheduler})
+
+        self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
+                                                         self.cfg.training.world_model.weight_decay)
+        self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
+                                                       lr=self.cfg.training.learning_rate)
 
     def benchmark(self):
         for i in range(20):
@@ -365,7 +385,10 @@ class Trainer:
         if epoch > cfg_tokenizer.start_after_epochs:
             metrics_tokenizer = self.train_component(self.agent.tokenizer, self.optimizer_tokenizer, sequence_length=1,
                                                      sample_from_start=True, sampling_weights=w, epoch=epoch,
+                                                     scheduler=self.lr_scheduler_tokenizer,
                                                      **cfg_tokenizer)
+            if self.lr_scheduler_tokenizer is not None:
+                metrics_tokenizer['tokenizer/lr'] = self.lr_scheduler_tokenizer.get_last_lr()[0][0]
         self.agent.tokenizer.eval()
 
         if epoch > cfg_world_model.start_after_epochs:
@@ -388,6 +411,7 @@ class Trainer:
     def train_component(self, component: nn.Module, optimizer: torch.optim.Optimizer, steps_per_epoch: int,
                         batch_num_samples: int, grad_acc_steps: int, max_grad_norm: Optional[float],
                         sequence_length: int, sampling_weights: Optional[Tuple[float]], sample_from_start: bool,
+                        scheduler=None,
                         **kwargs_loss: Any) -> Dict[str, float]:
         loss_total_epoch = 0.0
         intermediate_losses = defaultdict(float)
@@ -414,6 +438,8 @@ class Trainer:
                 torch.nn.utils.clip_grad_norm_(component.parameters(), max_grad_norm)
 
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
 
         metrics = {f'{str(component)}/train/total_loss': loss_total_epoch, **intermediate_losses}
         return metrics

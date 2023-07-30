@@ -51,8 +51,8 @@ def main(cfg: DictConfig):
         cfg.training.world_model.steps_per_epoch = 4
         cfg.training.actor_critic.steps_per_epoch = 4
         cfg.training.tokenizer.start_after_epochs = 0
-        cfg.training.world_model.start_after_epochs = 0
-        cfg.training.actor_critic.start_after_epochs = 0
+        cfg.training.world_model.start_after_epochs = 400
+        cfg.training.actor_critic.start_after_epochs = 400
         cfg.training.tokenizer.batch_num_samples = 1
         cfg.training.world_model.batch_num_samples = 1
         cfg.training.actor_critic.batch_num_samples = 1
@@ -62,11 +62,15 @@ def main(cfg: DictConfig):
     trainer.train_dataset.load_disk_checkpoint(trainer.ckpt_dir / 'dataset')
     # trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\Downloads\last.pt", device='cpu')
 
-    from src.utils import collect_embeddings
-    embs = collect_embeddings(trainer)
-
-    for epoch in range(1, 2):
+    for epoch in range(1, 60):
+        trainer.agent.tokenizer.embedding.reset()
         trainer.train_agent(epoch)
+        trainer.agent.tokenizer.embedding.step()
+        trainer.optimizer_tokenizer.reset(name='table',
+                                      optimizer=torch.optim.Adam([trainer.agent.tokenizer.get_param_groups()[0]],
+                                                                 lr=trainer.cfg.training.learning_rate)
+                                      )  # avoids momentum rescale after vocab change
+
     exit()
 
     import matplotlib.pyplot as plt
