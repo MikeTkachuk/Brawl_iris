@@ -1,20 +1,30 @@
 _target_: src.models.tokenizer.Tokenizer
 
-vocab_size: 512
-embed_dim: 512
+vocab_size: 2048
+embed_dim: 256
 encoder:
   _target_: src.models.tokenizer.Encoder
   config:
     _target_: src.models.tokenizer.EncoderDecoderConfig
-    resolution: 256
+    resolution: 192
     in_channels: 3
-    z_channels: 512
+    z_channels: 256
     ch: 32
-    ch_mult: [2, 2, 3, 4, 5]
+    ch_mult: [2, 2, 3, 4, 4]
     num_res_blocks: 2
-    attn_resolutions: [8, 16]
+    attn_resolutions: [12,]
     out_ch: 3
     dropout: 0.0
 decoder:
   _target_: src.models.tokenizer.Decoder
-  config: ${..encoder.config}
+  config:
+    _target_: src.models.tokenizer.EncoderDecoderConfig
+    resolution: ${...encoder.config.resolution}
+    in_channels: ${...encoder.config.in_channels}
+    z_channels: ${...encoder.config.z_channels}
+    ch: 48
+    ch_mult: [2, 2, 4, 4, 5]
+    num_res_blocks: 2
+    attn_resolutions: [12,]
+    out_ch: ${...encoder.config.out_ch}
+    dropout: 0.0

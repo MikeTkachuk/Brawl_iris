@@ -142,11 +142,11 @@ class RandomHeuristic:
         assert obs.ndim == 4  # (N, H, W, C)
         n = obs.size(0)
 
-        return torch.randint(low=0, high=self.num_actions, size=(n,)), torch.rand(size=(n,self.num_continuous))
+        return torch.randint(low=0, high=self.num_actions, size=(n,)), torch.rand(size=(n, self.num_continuous))
 
 
 def make_video(fname, fps, frames):
-    assert frames.ndim == 4 # (t, h, w, c)
+    assert frames.ndim == 4  # (t, h, w, c)
     t, h, w, c = frames.shape
     assert c == 3
 
@@ -154,4 +154,3 @@ def make_video(fname, fps, frames):
     for frame in frames:
         video.write(frame[:, :, ::-1])
     video.release()
-

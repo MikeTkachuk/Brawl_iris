@@ -6,6 +6,7 @@ import threading
 import time
 from collections import defaultdict, namedtuple
 from functools import partial
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -15,8 +16,10 @@ import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
+from PIL import Image
 
 from src.agent import Agent
+from src.aws.job_runner import JobRunner
 from src.collector import Collector
 from src.envs import SingleProcessEnv, MultiProcessEnv
 from src.episode import Episode
@@ -25,13 +28,42 @@ from src.make_reconstructions import make_reconstructions_from_batch
 from src.models.actor_critic import ActorCritic
 from src.models.world_model import WorldModel
 from src.utils import configure_optimizer, EpisodeDirManager, set_seed
-from src.aws import InstanceContext
+from src.aws.logger import LogListener
 
 import boto3
 
 
+def log_metrics(to_log, step=None, name=None):
+    if isinstance(to_log, bytes):
+        to_log = json.loads(to_log.decode('utf-8'))
+    for i in range(len(to_log)):
+        print("Parsed and logged: ", to_log[i])
+        wandb.log(to_log[i], step=to_log[i].get("epoch"))
+
+
+def log_image(to_log, step=None, name=None):
+    name = 'image' if name is None else name
+    if isinstance(to_log, bytes):
+        img_io = BytesIO()
+        img_io.write(to_log)
+        to_log = Image.open(img_io)
+    print(f"Parsed and logged: {name} at step {step}")
+    wandb.log({name: wandb.Image(to_log)}, step=step)
+
+
+def log_histogram(to_log, step=None, name=None):
+    if isinstance(to_log, bytes):
+        to_log = json.loads(to_log.decode('utf-8'))
+    step = to_log['step']
+    if not isinstance(to_log['data'], dict):
+        to_log['data'] = {name: to_log['data']}
+    for hist_name, hist_data in to_log['data'].items():
+        print(f"Parsed and logged: {hist_name} at step {step}")
+        wandb.log({hist_name: wandb.Histogram(hist_data)}, step=step)
+
+
 class Trainer:
-    def __init__(self, cfg: DictConfig, cloud_instance=False, env_actions=None) -> None:
+    def __init__(self, cfg: DictConfig, cloud_instance=False) -> None:
         self.cloud_instance = cloud_instance
         self.cfg = cfg
         if not self.cloud_instance:
@@ -41,7 +73,17 @@ class Trainer:
                 resume=True,
                 **self.cfg.wandb
             )
-            self.run_prefix = Path('_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
+            self.run_prefix = Path(
+                '_'.join([self.cfg.wandb.name, Path(os.getcwd()).parent.name, Path(os.getcwd()).name]))
+            self.log_listeners = [LogListener(log_metrics,
+                                              self.cfg.cloud.log_metrics,
+                                              self.cfg.cloud.bucket_name,
+                                              boto3.client('s3')),
+                                  LogListener(log_image,
+                                              self.cfg.cloud.log_reconstruction,
+                                              self.cfg.cloud.bucket_name,
+                                              boto3.client('s3')),
+                                  ]
 
         if self.cfg.common.seed is not None:
             set_seed(self.cfg.common.seed)
@@ -49,7 +91,9 @@ class Trainer:
         self.start_epoch = 1
         self.device = torch.device(self.cfg.common.device)
         if self.cloud_instance:
-            self.device = torch.device('cuda:0')
+            if not torch.cuda.is_available():
+                print("Warning CUDA unavailable on cloud instance")
+            self.device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
         self.ckpt_dir = Path('checkpoints')
         self.media_dir = Path('media')
@@ -61,6 +105,7 @@ class Trainer:
         config_dir.mkdir(exist_ok=False, parents=False)
         shutil.copy('.hydra/config.yaml', config_path)
         self.ckpt_dir.mkdir(exist_ok=True, parents=False)
+        (self.ckpt_dir / 'dataset').mkdir(exist_ok=True, parents=False)
         self.media_dir.mkdir(exist_ok=False, parents=False)
         self.episode_dir.mkdir(exist_ok=False, parents=False)
         self.reconstructions_dir.mkdir(exist_ok=False, parents=False)
@@ -94,6 +139,7 @@ class Trainer:
             env = train_env if self.cfg.training.should else test_env
         else:
             # if on cloud, env is only used for num_actions
+            env_actions = json.loads(self.cfg.env_actions)
             assert isinstance(env_actions, dict)
             env = namedtuple('Env', ['num_actions', 'num_continuous'])(**env_actions)
 
@@ -108,34 +154,47 @@ class Trainer:
         print(f'{sum(p.numel() for p in self.agent.world_model.parameters())} parameters in agent.world_model')
         print(f'{sum(p.numel() for p in self.agent.actor_critic.parameters())} parameters in agent.actor_critic')
 
-        self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(), lr=self.cfg.training.learning_rate)
+        self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(),
+                                                    lr=self.cfg.training.learning_rate)
         self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
                                                          self.cfg.training.world_model.weight_decay)
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
                                                        lr=self.cfg.training.learning_rate)
 
         if not self.cloud_instance:
-            if self.cfg.initialization.storage_prefix is not None:
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/'
-                          f'{self.cfg.initialization.storage_prefix}/checkpoints/last.pt '
-                          f'{self.ckpt_dir / "last.pt"}')
-                self.cfg.initialization.path_to_checkpoint = self.ckpt_dir / "last.pt"
-            if self.cfg.initialization.path_to_checkpoint is not None:
-                self.agent.load(**self.cfg.initialization, device=self.device)
-
+            self.from_pretrained()
             if self.cfg.common.resume:
-                print("trainer.init: resume started")
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
-                          f'{self.ckpt_dir} '
-                          f'--recursive '
-                          f'--quiet'
-                          )
-                os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
-                          f's3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints '
-                          f'--recursive '
-                          f'--quiet'
-                          )
-                self.load_checkpoint(load_episodes=False)
+                self.resume_run()
+
+    def from_pretrained(self):
+        if self.cfg.initialization.storage_prefix:
+            print(f'trainer.init: fetching weights from {self.cfg.initialization.storage_prefix}')
+            os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/'
+                      f'{self.cfg.initialization.storage_prefix}/checkpoints/last.pt '
+                      f'{self.ckpt_dir / "last.pt"}')
+            self.cfg.initialization.path_to_checkpoint = str(self.ckpt_dir / "last.pt")
+        if self.cfg.initialization.path_to_checkpoint:
+            print(f'trainer.init: loading weights from {self.cfg.initialization.path_to_checkpoint}')
+            self.agent.load(**self.cfg.initialization, device=self.device)
+        else:
+            print("Init weights unspecified. Skipping loading weights")
+
+    def resume_run(self):
+
+        assert self.cfg.common.resume
+
+        print(f"trainer.init: resume started from {self.cfg.common.resume}")
+        os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
+                  f'{self.ckpt_dir} '
+                  f'--recursive '
+                  f'--quiet'
+                  )
+        os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.cfg.common.resume}/checkpoints '
+                  f's3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints '
+                  f'--recursive '
+                  f'--quiet'
+                  )
+        self.load_checkpoint(load_episodes=False)
 
     def benchmark(self):
         for i in range(20):
@@ -143,33 +202,76 @@ class Trainer:
 
     def run(self) -> None:
 
-        for epoch in range(self.start_epoch, 1 + self.cfg.common.epochs):
+        while self.start_epoch <= self.cfg.common.epochs:
 
-            print(f"\nEpoch {epoch} / {self.cfg.common.epochs}\n")
+            print(f"\nEpoch {self.start_epoch} / {self.cfg.common.epochs}\n")
             start_time = time.time()
             to_log = []
             if self.cfg.training.should:
-                if epoch <= self.cfg.collection.train.stop_after_epochs:
-                    to_log += self.train_collector.collect(self.agent, epoch, **self.cfg.collection.train.config)
+                if self.start_epoch <= self.cfg.collection.train.stop_after_epochs:
+                    to_log += self.train_collector.collect(self.agent, self.start_epoch,
+                                                           **self.cfg.collection.train.config)
 
                 if self.cfg.training.on_cloud:
-                    to_log += self.train_agent_cloud(epoch)
+                    to_log += self.train_agent_cloud(self.start_epoch)
                 else:
-                    to_log += self.train_agent(epoch)
+                    to_log += self.train_agent(self.start_epoch)
 
-            if self.cfg.evaluation.should and (epoch % self.cfg.evaluation.every == 0):
+            if self.cfg.evaluation.should and (self.start_epoch % self.cfg.evaluation.every == 0):
                 self.test_dataset.clear()
-                to_log += self.test_collector.collect(self.agent, epoch, **self.cfg.collection.test.config)
-                to_log += self.eval_agent(epoch)
+                to_log += self.test_collector.collect(self.agent, self.start_epoch, **self.cfg.collection.test.config)
+                to_log += self.eval_agent(self.start_epoch)
 
             if self.cfg.training.should:
-                self.save_checkpoint(epoch, save_agent_only=not self.cfg.common.do_checkpoint)
+                self.save_checkpoint(self.start_epoch, save_agent_only=not self.cfg.common.do_checkpoint)
 
             to_log.append({'duration': (time.time() - start_time) / 3600})
-            for metrics in to_log:
-                wandb.log({'epoch': epoch, **metrics})
+            to_log = [{'epoch': self.start_epoch, **metrics} for metrics in to_log]
+            log_metrics(to_log)
+            wandb.log({'epoch': self.start_epoch}, commit=True, step=self.start_epoch)  # commit metrics
+            self.start_epoch += 1
 
         self.finish()
+
+    def prepare_job(self):
+        # init loggers
+        for logger in self.log_listeners:
+            logger.init(step=self.start_epoch)
+
+        # update checkpoint
+        s3_client = boto3.client(
+            's3'
+        )
+
+        to_upload, to_delete = [], []
+        local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
+        cloud_dataset_response = s3_client.list_objects_v2(
+            Bucket=self.cfg.cloud.bucket_name,
+            Prefix=str(self.run_prefix / 'checkpoints/dataset').replace('\\', '/')
+        )
+        cloud_dataset_filenames = set(
+            Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
+        to_upload.extend([self.ckpt_dir / 'dataset' / file_name
+                          for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
+        to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
+
+        # delete old episodes on cloud
+        for file_name in to_delete:
+            s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
+                                    Key=str(self.run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
+
+        # upload updated episodes and model checkpoints if needed
+        if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
+                                     Prefix=str(self.run_prefix / 'checkpoints').replace('\\', '/')
+                                     )['KeyCount'] < 3:  # only the first time
+            print('Trainer.train_agent_cloud: full checkpoint staged for upload')
+            to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
+        else:
+            to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
+        print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
+        for file in tqdm(to_upload):
+            name_on_bucket = str(self.run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
+            s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
 
     def train_agent_cloud(self, epoch: int):
         """
@@ -183,14 +285,13 @@ class Trainer:
 
         def _clicker(_stop_event: threading.Event):
             while True:
-                idle_click()
-                time.sleep(5)
                 if _stop_event.is_set():
                     break
+                idle_click()
+                time.sleep(30)
 
         stop_idle_clicking_key = threading.Event()
         idle_clicker = threading.Thread(target=_clicker, args=(stop_idle_clicking_key,))
-        idle_clicker.start()
 
         # start initialization
         metrics = [{'epoch': epoch}]
@@ -205,72 +306,31 @@ class Trainer:
             epoch > cfg_world_model.start_after_epochs,
             epoch > cfg_actor_critic.start_after_epochs
         ]):
+            idle_clicker.start()
 
-            # upload new and delete old episodes
-            s3_client = boto3.client(
-                's3'
-            )
-
-            to_upload, to_delete = [], []
             self.save_checkpoint(epoch, save_agent_only=False)
-            local_dataset_filenames = set(file.name for file in (self.ckpt_dir / 'dataset').iterdir() if file.is_file())
-            cloud_dataset_response = s3_client.list_objects_v2(
-                Bucket=self.cfg.cloud.bucket_name,
-                Prefix=str(self.run_prefix / 'checkpoints/dataset').replace('\\', '/')
-            )
-            cloud_dataset_filenames = set(
-                Path(file_meta['Key']).name for file_meta in cloud_dataset_response.get('Contents', []))
-            to_upload.extend([self.ckpt_dir / 'dataset' / file_name
-                              for file_name in local_dataset_filenames.difference(cloud_dataset_filenames)])
-            to_delete.extend(cloud_dataset_filenames.difference(local_dataset_filenames))
-
-            # delete old episodes on cloud
-            for file_name in to_delete:
-                s3_client.delete_object(Bucket=self.cfg.cloud.bucket_name,
-                                        Key=str(self.run_prefix / 'checkpoints/dataset' / file_name).replace('\\', '/'))
-
-            # upload updated episodes and model checkpoints
-            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(self.run_prefix / 'checkpoints').replace('\\', '/')
-                                         )['KeyCount'] < 3:  # only the first time
-                print('Trainer.train_agent_cloud: full checkpoint staged for upload')
-                to_upload.extend([f for f in self.ckpt_dir.iterdir() if f.is_file()])
-            else:
-                to_upload.append(self.ckpt_dir / 'epoch.pt')  # always update epoch
-            print(f'Trainer.train_agent_cloud: Started uploading {len(to_upload)} files')
-            for file in tqdm(to_upload):
-                name_on_bucket = str(self.run_prefix / 'checkpoints' / file.relative_to(self.ckpt_dir)).replace('\\', '/')
-                s3_client.upload_file(str(file.absolute()), self.cfg.cloud.bucket_name, name_on_bucket)
-
+            self.prepare_job()
             repo_root = Path(__file__).parents[1]  # ->Brawl_iris/src/trainer.py
-            if s3_client.list_objects_v2(Bucket=self.cfg.cloud.bucket_name,
-                                         Prefix=str(self.run_prefix / repo_root.name).replace('\\', '/')
-                                         )['KeyCount'] < 3:  # only the first time
-                print('Trainer.train_agent_cloud: code upload started')
-                # upload code if needed
-                name_on_bucket = str(self.run_prefix / f'{repo_root.name}').replace('\\', '/')
-                os.system(f'aws s3 cp {repo_root} s3://{self.cfg.cloud.bucket_name}/{name_on_bucket} '
-                          f'--exclude ".git/*" '
-                          f'--exclude ".idea/*" '
-                          f'--exclude "results/*" '
-                          f'--exclude "assets/*" '
-                          f'--recursive '
-                          f'--quiet')
-                print('Trainer.train_agent_cloud: code upload finished')
+            job_commands = [
+                "rm -r Brawl_iris checkpoints",
 
-            # start job
-            with InstanceContext(self.cfg.cloud.instance_id, region_name=self.cfg.cloud.region_name) as instance:
-                instance.connect(self.cfg.cloud.key_file)
-                time.sleep(5)  # prevents unfinished initializations
-                instance.exec_command("rm -r Brawl_iris checkpoints")
-                instance.exec_command(f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}\" ~ "
-                                      f"--recursive "
-                                      f"--quiet")
-                env_actions = json.dumps({'num_actions': int(self.train_collector.env.num_actions),
-                                          'num_continuous': int(self.train_collector.env.num_continuous)})
+                f"aws s3 cp \"s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}\" ~ "
+                f"--recursive "
+                f"--quiet",
+
                 # TODO (not important) save env_actions in config
+                f"sh {repo_root.name}/src/aws/run.sh {self.run_prefix}",
+            ]
+            job = JobRunner(self.cfg.cloud.bucket_name,
+                            str(self.run_prefix),
+                            self.cfg.cloud.instance_id,
+                            self.cfg.cloud.region_name,
+                            self.cfg.cloud.key_file,
+                            job_commands,
+                            self.log_listeners
+                            )
 
-                instance.exec_command(f"sh {repo_root.name}/aws_setup/run.sh {self.run_prefix}")
+            run_time = job.run()
 
             # download checkpoint and metrics
             os.system(f'aws s3 cp s3://{self.cfg.cloud.bucket_name}/{self.run_prefix}/checkpoints {self.ckpt_dir} '
@@ -279,15 +339,12 @@ class Trainer:
 
             # load checkpoint locally
             self.load_checkpoint(load_dataset=False)
-            with open(self.ckpt_dir / 'metrics.json') as metrics_file:
-                metrics = json.load(metrics_file)
-                metrics[0]['duration_gpu'] = instance.session_time / 3600
-                print(
-                    f'Trainer.train_agent_cloud: Received metrics: {metrics}')
+            self.start_epoch -= 1
+            metrics = [{"epoch": self.start_epoch, "duration_gpu": run_time / 3600}]
 
-        # terminate clicker
-        stop_idle_clicking_key.set()
-        idle_clicker.join()
+            # terminate clicker
+            stop_idle_clicking_key.set()
+            idle_clicker.join()
 
         return metrics
 
@@ -439,7 +496,7 @@ class Trainer:
 
         return to_log
 
-    def _save_checkpoint(self, epoch: int, save_agent_only: bool) -> None:
+    def _save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
         torch.save(self.agent.state_dict(), self.ckpt_dir / 'last.pt')
         if not save_agent_only:
             torch.save(epoch, self.ckpt_dir / 'epoch.pt')
@@ -450,14 +507,15 @@ class Trainer:
             }, self.ckpt_dir / 'optimizer.pt')
             ckpt_dataset_dir = self.ckpt_dir / 'dataset'
             ckpt_dataset_dir.mkdir(exist_ok=True, parents=False)
-            self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir)
+            if save_dataset:
+                self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir)
             if self.cfg.evaluation.should:
                 torch.save(self.test_dataset.num_seen_episodes, self.ckpt_dir / 'num_seen_episodes_test_dataset.pt')
 
-    def save_checkpoint(self, epoch: int, save_agent_only: bool) -> None:
+    def save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
         tmp_checkpoint_dir = Path('checkpoints_tmp')
         shutil.copytree(src=self.ckpt_dir, dst=tmp_checkpoint_dir, ignore=shutil.ignore_patterns('dataset'))
-        self._save_checkpoint(epoch, save_agent_only)
+        self._save_checkpoint(epoch, save_agent_only, save_dataset=save_dataset)
         shutil.rmtree(tmp_checkpoint_dir)
 
     def load_checkpoint(self, load_dataset=True, load_episodes=True, agent_only=False) -> None:

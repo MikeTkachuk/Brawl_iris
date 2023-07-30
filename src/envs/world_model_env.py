@@ -86,7 +86,6 @@ class WorldModelEnv:
                 token = Categorical(logits=outputs_wm.logits_observations).sample()
                 obs_tokens.append(token)
 
-        output_sequence = torch.cat(output_sequence, dim=1)   # (B, 1 + K, E)
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
 
         obs = self.decode_obs_tokens() if should_predict_next_obs else None

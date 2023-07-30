@@ -27,7 +27,7 @@ class Agent(nn.Module):
         return self.actor_critic.device
 
     def load(self, path_to_checkpoint: Path, device: torch.device, load_tokenizer: bool = True,
-             load_world_model: bool = True, load_actor_critic: bool = True) -> None:
+             load_world_model: bool = True, load_actor_critic: bool = True, **kwargs) -> None:
         agent_state_dict = torch.load(path_to_checkpoint, map_location=device)
         if load_tokenizer:
             self.tokenizer.load_state_dict(extract_state_dict(agent_state_dict, 'tokenizer'))

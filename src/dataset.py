@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import psutil
 import torch
+from einops import rearrange
 
 from src.episode import Episode
 
@@ -13,8 +14,12 @@ Batch = Dict[str, torch.Tensor]
 
 
 class EpisodesDataset:
-    def __init__(self, max_num_episodes: Optional[int] = None, name: Optional[str] = None) -> None:
+    def __init__(self,
+                 max_num_episodes: Optional[int] = None,
+                 name: Optional[str] = None,
+                 resolution: Optional[int] = None) -> None:
         self.max_num_episodes = max_num_episodes
+        self.resolution = resolution
         self.name = name if name is not None else 'dataset'
         self.num_seen_episodes = 0
         self.episodes = deque()
@@ -101,6 +106,10 @@ class EpisodesDataset:
         for k in episodes_segments[0]:
             batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
         batch['observations'] = batch['observations'].float() / 255.0  # int8 to float and scale
+        if self.resolution is not None:
+            to_resize = rearrange(batch['observations'], 'b t ... -> (b t) ...')
+            resized = torch.nn.functional.interpolate(to_resize, (self.resolution, self.resolution), mode='bilinear')
+            batch['observations'] = rearrange(resized, '(b t) ... -> b t ...', b=batch['observations'].shape[0])
         return batch
 
     def traverse(self, batch_num_samples: int, chunk_size: int):
@@ -134,6 +143,12 @@ class EpisodesDataset:
     def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
         assert directory.is_dir()
         episode_ids = sorted([int(p.stem) for p in directory.iterdir()])
+
+        if not len(episode_ids):
+            self.disk_episodes = deque()
+            self.num_seen_episodes = 0
+            return
+
         self.disk_episodes = deque(episode_ids)
         self.num_seen_episodes = episode_ids[-1] + 1
         if load_episodes:
