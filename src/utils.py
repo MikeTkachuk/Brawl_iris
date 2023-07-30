@@ -38,8 +38,7 @@ def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_na
     inter_params = decay & no_decay
     union_params = decay | no_decay
     assert len(inter_params) == 0, f"parameters {str(inter_params)} made it into both decay/no_decay sets!"
-    assert len(
-        param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
+    assert len(param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
 
     # create the pytorch optimizer object
     optim_groups = [

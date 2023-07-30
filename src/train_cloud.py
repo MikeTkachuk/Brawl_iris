@@ -16,7 +16,7 @@ from src.trainer import Trainer
 
 
 def before_epoch(trainer: Trainer, epoch):
-    trainer.agent.tokenizer._token_histogram = torch.zeros(trainer.agent.tokenizer.vocab_size)
+    pass
 
 
 def after_epoch(trainer: Trainer, epoch, metrics=None):
@@ -56,7 +56,7 @@ def main(cfg: DictConfig):
     # train code
     for epoch in range(trainer.start_epoch, trainer.start_epoch + cfg.training.epochs_per_job):
         before_epoch(trainer, epoch)
-        print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job}")
+        print(f"Cloud epoch: {epoch}/{trainer.start_epoch + cfg.training.epochs_per_job - 1}")
 
         metrics = trainer.train_agent(epoch)
 

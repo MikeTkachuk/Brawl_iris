@@ -70,7 +70,9 @@ class LogListener:
                     self._counter += 1
             except Exception as e:
                 if not isinstance(e, botocore.exceptions.ClientError):
-                    print(f"logger._listen encountered: {e}")
+                    import traceback
+                    print(f"logger._listen encountered:")
+                    traceback.print_exc()
                 if isinstance(e, KeyboardInterrupt):
                     break
 

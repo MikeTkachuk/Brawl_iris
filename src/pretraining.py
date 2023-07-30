@@ -10,7 +10,7 @@ import boto3
 from src.trainer import Trainer
 from src.aws.job_runner import JobRunner
 from src.aws.logger import LogListener
-from src.trainer import log_metrics, log_image
+from src.trainer import log_metrics, log_image, log_histogram
 
 DATA_PREFIX = "pretrain_data/eve/solo_showdown"
 
