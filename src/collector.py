@@ -1,5 +1,6 @@
 import random
 import sys
+import time
 from typing import List, Optional, Union
 
 from einops import rearrange
@@ -28,7 +29,7 @@ class Collector:
 
     @torch.no_grad()
     def collect(self, agent: Agent, epoch: int, epsilon: float, should_sample: bool, temperature: float, burn_in: int,
-                *, num_steps: Optional[int] = None, num_episodes: Optional[int] = None):
+                *, num_steps: Optional[int] = None, num_episodes: Optional[int] = None, speed_constraint: float = None):
         assert self.env.num_actions == agent.world_model.act_vocab_size
         assert self.env.num_continuous == agent.world_model.act_continuous_size
         assert 0 <= epsilon <= 1
@@ -58,15 +59,13 @@ class Collector:
         pbar = tqdm(total=num_steps if num_steps is not None else num_episodes,
                     desc=f'Experience collection ({self.dataset.name})', file=sys.stdout)
 
-        import time
         while not should_stop(steps, episodes):
+            start = time.time()
             observations.append(self.obs)
 
             obs = rearrange(torch.FloatTensor(self.obs).div(255), 'n h w c -> n c h w').to(agent.device)
 
-            start = time.time()
             act, act_cont = agent.act(obs, should_sample=should_sample, temperature=temperature)
-            print("collector.Collector: agent.act", time.time() - start)
             # observations.append(self.obs)
             # obs = rearrange(torch.FloatTensor(self.obs).div(255), 'n h w c -> n c h w').to(agent.device)
             # act, act_cont = agent.act(obs, should_sample=should_sample, temperature=temperature)
@@ -88,6 +87,11 @@ class Collector:
             new_steps = len(self.env.mask_new_dones)
             steps += new_steps
             pbar.update(new_steps if num_steps is not None else 0)
+
+            extra_time = (1 / speed_constraint) - (time.time() - start) if speed_constraint is not None else 0.0
+            if extra_time > 0:
+                print("collector.Collector: sleep for ", time.time() - start)
+                time.sleep(extra_time)
 
             # Warning: with EpisodicLifeEnv + MultiProcessEnv, reset is ignored if not a real done.
             # Thus, segments of experience following a life loss and preceding a general done are discarded.

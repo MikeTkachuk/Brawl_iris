@@ -47,11 +47,11 @@ class Backbone(nn.Module):
         self.maxp1 = nn.Identity()
         self.conv2 = nn.Conv2d(32, 64, 5, stride=2, padding=0)
         self.maxp2 = nn.Identity()
-        self.conv3 = nn.Conv2d(64, 64, 5, stride=2, padding=0)
+        self.conv3 = nn.Conv2d(64, 64, 5, stride=1, padding=0)
         self.maxp3 = nn.Identity()
         self.conv4 = nn.Conv2d(64, 128, 3, stride=1, padding=0)
         self.maxp4 = nn.MaxPool2d(3, 3)
-        self.conv5 = nn.Conv2d(128, 128, 3, stride=1, padding=1)
+        self.conv5 = nn.Conv2d(128, 128, 3, stride=1, padding=0)
         self.maxp5 = nn.MaxPool2d(2, 2)
         self.conv6 = nn.Conv2d(128, 256, 3, stride=1, padding=1)
         self.maxp6 = nn.MaxPool2d(2, 2)
@@ -130,15 +130,17 @@ class ActorCritic(nn.Module):
                          :self.act_vocab_size]
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
-        std_continuous = F.softplus(std_continuous)  # [-inf, inf] -> [0, inf]
+        std_continuous = F.softplus(std_continuous) + 1E-3  # [-inf, inf] -> [0, inf]
         means_values = rearrange(self.critic_linear(self.hx), 'b 1 -> b 1 1')
 
         return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, world_model: WorldModel, imagine_horizon: int,
                      gamma: float, lambda_: float, entropy_weight: float, **kwargs: Any) -> LossWithIntermediateLosses:
-        assert not self.use_original_obs
-        outputs = self.imagine(batch, tokenizer, world_model, horizon=imagine_horizon)
+        if not self.use_original_obs:
+            outputs = self.imagine(batch, tokenizer, world_model, horizon=imagine_horizon)
+        else:
+            outputs = self.recall(batch, imagine_horizon)
 
         with torch.no_grad():
             lambda_returns = compute_lambda_returns(
@@ -157,9 +159,10 @@ class ActorCritic(nn.Module):
                 log_probs * (lambda_returns - values.detach())).mean()
 
         cont = Normal(outputs.continuous_means[:, :-1], outputs.continuous_stds[:, :-1])
-        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1]).squeeze(-2)  # (B, T, #act_cont)
+        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1])  # (B, T, #act_cont)
         loss_continuous_actions = -1 * (
                 log_probs_continuous * (lambda_returns - values.detach()).unsqueeze(-1)).mean()
+        loss_continuous_actions = loss_continuous_actions.clip(-10, 10)
 
         loss_entropy = - entropy_weight * d.entropy().mean()
         loss_entropy_continuous = - entropy_weight * cont.entropy().mean()
@@ -195,7 +198,7 @@ class ActorCritic(nn.Module):
             tokenizer.encode_decode(initial_observations[:, :-1], should_preprocess=True, should_postprocess=True), 0,
             1) if initial_observations.size(1) > 1 else None
         self.reset(n=initial_observations.size(0), burnin_observations=burnin_observations,
-                   mask_padding=mask_padding[:, :-1])
+                   mask_padding=mask_padding[:, :-1])  # TODO wm receives much less context than the actor
 
         obs = wm_env.reset_from_initial_observations(initial_observations[:, -1])
         for k in tqdm(range(horizon), disable=not show_pbar, desc='Imagination', file=sys.stdout):
@@ -224,10 +227,68 @@ class ActorCritic(nn.Module):
         return ImagineOutput(
             observations=torch.stack(all_observations, dim=1).mul(255).byte(),  # (B, T, C, H, W) in [0, 255]
             actions=torch.cat(all_actions, dim=1),  # (B, T)
-            actions_continuous=torch.stack(all_continuous, dim=1),  # (B, T, #actions)
+            actions_continuous=torch.cat(all_continuous, dim=1),  # (B, T, #actions)
             logits_actions=torch.cat(all_logits_actions, dim=1),  # (B, T, #actions)
-            continuous_means=torch.stack(all_continuous_means, dim=1),  # (B, T, #actions)
-            continuous_stds=torch.stack(all_continuous_stds, dim=1),  # (B, T, #actions)
+            continuous_means=torch.cat(all_continuous_means, dim=1),  # (B, T, #actions)
+            continuous_stds=torch.cat(all_continuous_stds, dim=1),  # (B, T, #actions)
+            values=rearrange(torch.cat(all_values, dim=1), 'b t 1 -> b t'),  # (B, T)
+            rewards=torch.cat(all_rewards, dim=1).to(device),  # (B, T)
+            ends=torch.cat(all_ends, dim=1).to(device),  # (B, T)
+        )
+
+    def recall(self, batch: Batch, horizon: int, show_pbar: bool = False):
+        # burn-in param workaround: new_burn_in = burn_in - horizon
+        total_n = batch['observations'].size(1)
+        initial_observations = batch['observations'][:, :total_n - horizon - 1]
+        init_mask_padding = batch['mask_padding'][:, :total_n - horizon - 1]
+        assert initial_observations.ndim == 5
+        assert batch['mask_padding'][:, -1].all()
+        device = initial_observations.device
+        self.reset(n=initial_observations.size(0), burnin_observations=initial_observations,
+                   mask_padding=init_mask_padding)
+
+        all_actions = []
+        all_continuous = []
+        all_logits_actions = []
+        all_continuous_means = []
+        all_continuous_stds = []
+        all_values = []
+        all_rewards = []
+        all_ends = []
+        all_observations = []
+
+        for k in tqdm(range(total_n - horizon - 1, total_n), disable=not show_pbar, desc='Recalling', file=sys.stdout):
+            obs = batch['observations'][:, k]
+            all_observations.append(obs)
+
+            outputs_ac = self(obs)
+
+            reward = batch['rewards'][:, k]
+            done = batch['ends'][:, k]
+            action = batch['actions'][:, k]
+            continuous = batch['actions_continuous'][:, k]
+
+            all_actions.append(action)
+            all_continuous.append(continuous.unsqueeze(1))
+            all_logits_actions.append(outputs_ac.logits_actions)
+            all_continuous_means.append(outputs_ac.mean_continuous)
+            all_continuous_stds.append(outputs_ac.std_continuous)
+            all_values.append(outputs_ac.means_values)
+            all_rewards.append(torch.tensor(reward).reshape(-1, 1))
+            all_ends.append(torch.tensor(done).reshape(-1, 1))
+
+        self.clear()
+
+        # copy reward in the second to last step
+        all_rewards[-2] = all_rewards[-1].clone()
+
+        return ImagineOutput(
+            observations=torch.stack(all_observations, dim=1).mul(255).byte(),  # (B, T, C, H, W) in [0, 255]
+            actions=torch.cat(all_actions, dim=1),  # (B, T)
+            actions_continuous=torch.cat(all_continuous, dim=1),  # (B, T, #actions)
+            logits_actions=torch.cat(all_logits_actions, dim=1),  # (B, T, #actions)
+            continuous_means=torch.cat(all_continuous_means, dim=1),  # (B, T, #actions)
+            continuous_stds=torch.cat(all_continuous_stds, dim=1),  # (B, T, #actions)
             values=rearrange(torch.cat(all_values, dim=1), 'b t 1 -> b t'),  # (B, T)
             rewards=torch.cat(all_rewards, dim=1).to(device),  # (B, T)
             ends=torch.cat(all_ends, dim=1).to(device),  # (B, T)
