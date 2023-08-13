@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch.distributions.categorical import Categorical
 from torch.distributions.normal import Normal
+from torch.distributions.bernoulli import Bernoulli
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -14,6 +15,7 @@ from tqdm import tqdm
 from src.dataset import Batch
 from src.envs.world_model_env import WorldModelEnv
 from src.models.tokenizer import Tokenizer
+from src.models.tokenizer.nets import Normalize
 from src.models.world_model import WorldModel
 from src.utils import compute_lambda_returns, LossWithIntermediateLosses
 
@@ -42,27 +44,28 @@ class ImagineOutput:
 class Backbone(nn.Module):
     def __init__(self):
         super().__init__()
-        # TODO try batchnorm
-        self.conv1 = nn.Conv2d(3, 32, 7, stride=2, padding=0)
-        self.maxp1 = nn.Identity()
-        self.conv2 = nn.Conv2d(32, 64, 5, stride=2, padding=0)
-        self.maxp2 = nn.Identity()
-        self.conv3 = nn.Conv2d(64, 64, 5, stride=1, padding=0)
-        self.maxp3 = nn.Identity()
-        self.conv4 = nn.Conv2d(64, 128, 3, stride=1, padding=0)
-        self.maxp4 = nn.MaxPool2d(3, 3)
-        self.conv5 = nn.Conv2d(128, 128, 3, stride=1, padding=0)
-        self.maxp5 = nn.MaxPool2d(2, 2)
-        self.conv6 = nn.Conv2d(128, 256, 3, stride=1, padding=1)
-        self.maxp6 = nn.MaxPool2d(2, 2)
+        channels = [3, 32, 64, 64, 128, 128, 256]
+        kernels = [7, 5, 5, 3, 3, 3]
+        strides = [2, 2, 1, 1, 1, 1]
+        paddings = [0, 0, 0, 0, 0, 1]
+        pools = [1, 1, 1, 3, 2, 2]
+        self.blocks = nn.ModuleList()
+
+        for i, (st, ker, pad, pool) in enumerate(zip(strides, kernels, paddings, pools)):
+            block = nn.Sequential()
+            conv = nn.Conv2d(channels[i], channels[i + 1], kernel_size=ker, stride=st, padding=pad)
+            block.append(conv)
+            block.append(Normalize(channels[i + 1]))
+            if pool == 1:
+                block.append(nn.Identity())
+            else:
+                block.append(nn.MaxPool2d(pool, pool))
+            block.append(nn.ReLU())
+            self.blocks.append(block)
 
     def forward(self, x):
-        x = F.relu(self.maxp1(self.conv1(x)))
-        x = F.relu(self.maxp2(self.conv2(x)))
-        x = F.relu(self.maxp3(self.conv3(x)))
-        x = F.relu(self.maxp4(self.conv4(x)))
-        x = F.relu(self.maxp5(self.conv5(x)))
-        x = F.relu(self.maxp6(self.conv6(x)))
+        for block in self.blocks:
+            x = block(x)
         return x
 
 
@@ -70,17 +73,21 @@ class ActorCritic(nn.Module):
     def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False) -> None:
         super().__init__()
         self.use_original_obs = use_original_obs
+        self.action_split = [1, 1, 1, 1, 4, 4]
 
         self.backbone = Backbone()
+        self.emb_dim = 1024
         self.lstm_dim = 256
-        self.lstm = nn.LSTMCell(1024, self.lstm_dim)
+        self.lstm = nn.LSTMCell(self.emb_dim, self.lstm_dim)
         self.hx, self.cx = None, None
 
-        self.act_vocab_size = act_vocab_size
+        self.emb_linear = nn.Linear(self.emb_dim + self.lstm_dim, self.lstm_dim)
+        self.act_vocab_size = sum(self.action_split)
         self.act_continuous_size = act_continuous_size
         self.critic_linear = nn.Linear(self.lstm_dim, 1)
         self.actor_linear = nn.Linear(self.lstm_dim,
-                                      self.act_vocab_size + 2 * self.act_continuous_size)  # add more entries for continuous (2*x) for mean and std
+                                      self.act_vocab_size + 2 * self.act_continuous_size
+                                      )  # add more entries for continuous (2*x) for mean and std
 
     def __repr__(self) -> str:
         return "actor_critic"
@@ -94,7 +101,7 @@ class ActorCritic(nn.Module):
 
     def reset(self, n: int, burnin_observations: Optional[torch.Tensor] = None,
               mask_padding: Optional[torch.Tensor] = None) -> None:
-        device = self.backbone.conv1.weight.device
+        device = self.backbone.blocks[0][0].weight.device
         self.hx = torch.zeros(n, self.lstm_dim, device=device)
         self.cx = torch.zeros(n, self.lstm_dim, device=device)
         if burnin_observations is not None:
@@ -125,15 +132,52 @@ class ActorCritic(nn.Module):
         else:
             self.hx[mask_padding], self.cx[mask_padding] = self.lstm(x, (self.hx[mask_padding], self.cx[mask_padding]))
 
-        full_logits = rearrange(self.actor_linear(self.hx), 'b a -> b 1 a')
+        x = self.emb_linear(torch.cat([x, self.hx], dim=-1))
+        x = torch.nn.functional.mish(x)
+
+        full_logits = rearrange(self.actor_linear(x), 'b a -> b 1 a')
         logits_actions = full_logits[...,
                          :self.act_vocab_size]
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
         std_continuous = F.softplus(std_continuous) + 1E-3  # [-inf, inf] -> [0, inf]
-        means_values = rearrange(self.critic_linear(self.hx), 'b 1 -> b 1 1')
+        means_values = rearrange(self.critic_linear(x), 'b 1 -> b 1 1')
 
         return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
+
+    def sample_actions(self, out: ActorCriticOutput, eps=0.01):
+        logits_per_action_type = out.logits_actions.split(self.action_split, dim=-1)
+        actions = []
+        for logit in logits_per_action_type:
+            if logit.size(-1) == 1:
+                d = Bernoulli(logits=logit)
+                action = d.sample()
+                if torch.rand() < eps:
+                    action = torch.randint(0, 2, size=action.shape)
+            else:
+                d = Categorical(logits=logit.unsqueeze(0))
+                action = d.sample()
+                if torch.rand() < eps:
+                    action = torch.randint(0, logit.size(-1), size=action.shape)
+
+            actions.append(action)
+        d_cont = Normal(out.mean_continuous, out.std_continuous)
+        return torch.cat(actions, dim=-1), d_cont.rsample()
+
+    def get_proba_entropy(self, out: ImagineOutput):
+        logits_per_action_type = out.logits_actions.split(self.action_split, dim=-1)
+        action_per_type = out.actions.split(1, dim=-1)
+        log_probs, entropies = [], []
+        for logit, action in zip(logits_per_action_type, action_per_type):
+            if logit.size(-1) == 1:
+                d = Bernoulli(logits=logit[:, :-1])
+            else:
+                d = Categorical(logits=logit[:, :-1, None, :])
+            log_probs.append(d.log_prob(action[:, :-1]))
+            entropies.append(d.entropy())
+        d_cont = Normal(out.continuous_means[:, :-1], out.continuous_stds[:, :-1])
+        return (torch.cat(log_probs, dim=-1), torch.cat(entropies, dim=-1)), \
+               (d_cont.log_prob(out.actions_continuous[:, :-1]), d_cont.entropy())
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, world_model: WorldModel, imagine_horizon: int,
                      gamma: float, lambda_: float, entropy_weight: float, **kwargs: Any) -> LossWithIntermediateLosses:
@@ -162,7 +206,6 @@ class ActorCritic(nn.Module):
         log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1])  # (B, T, #act_cont)
         loss_continuous_actions = -1 * (
                 log_probs_continuous * (lambda_returns - values.detach()).unsqueeze(-1)).mean()
-        loss_continuous_actions = loss_continuous_actions.clip(-10, 10)
 
         loss_entropy = - entropy_weight * d.entropy().mean()
         loss_entropy_continuous = - entropy_weight * cont.entropy().mean()

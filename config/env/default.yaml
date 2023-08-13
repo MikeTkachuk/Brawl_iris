@@ -1,5 +1,6 @@
 train:
   _target_: environment.make_env
+  move_shot_anchors: [4, 4]
   #id: ALE/Assault-v5
   #size: 64
   #max_episode_steps: 20000
