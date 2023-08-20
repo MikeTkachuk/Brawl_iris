@@ -44,11 +44,12 @@ class ImagineOutput:
 class Backbone(nn.Module):
     def __init__(self):
         super().__init__()
-        channels = [3, 32, 64, 64, 128, 128, 256]
-        kernels = [7, 5, 5, 3, 3, 3]
-        strides = [2, 2, 1, 1, 1, 1]
-        paddings = [0, 0, 0, 0, 0, 1]
-        pools = [1, 1, 1, 3, 2, 2]
+        channels = [3, 32, 32, 48, 48, 64, 64, 64]
+        kernels = [7, 5, 5, 3, 3, 3, 3]
+        strides = [1, 1, 2, 1, 2, 1, 1]
+        paddings = [3, 2, 0, 1, 0, 1, 0]
+        pools = [1, 1, 1, 1, 2, 2, 2]
+        self.skip_connection = [False, True, False, True, False, False, False]
         self.blocks = nn.ModuleList()
 
         for i, (st, ker, pad, pool) in enumerate(zip(strides, kernels, paddings, pools)):
@@ -60,12 +61,15 @@ class Backbone(nn.Module):
                 block.append(nn.Identity())
             else:
                 block.append(nn.MaxPool2d(pool, pool))
-            block.append(nn.ReLU())
+            block.append(nn.Mish())
             self.blocks.append(block)
 
     def forward(self, x):
-        for block in self.blocks:
-            x = block(x)
+        for block, do_skip in zip(self.blocks, self.skip_connection):
+            if do_skip:
+                x = x + block(x)
+            else:
+                x = block(x)
         return x
 
 
@@ -77,7 +81,7 @@ class ActorCritic(nn.Module):
 
         self.backbone = Backbone()
         self.emb_dim = 1024
-        self.lstm_dim = 256
+        self.lstm_dim = 512
         self.lstm = nn.LSTMCell(self.emb_dim, self.lstm_dim)
         self.hx, self.cx = None, None
 
@@ -121,6 +125,7 @@ class ActorCritic(nn.Module):
         assert 0 <= inputs.min() <= 1 and 0 <= inputs.max() <= 1
         assert mask_padding is None or (
                 mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0) and mask_padding.any())
+
         x = inputs[mask_padding] if mask_padding is not None else inputs
 
         x = x.mul(2).sub(1)
@@ -129,19 +134,34 @@ class ActorCritic(nn.Module):
 
         if mask_padding is None:
             self.hx, self.cx = self.lstm(x, (self.hx, self.cx))
+            x = self.emb_linear(torch.cat([x, self.hx], dim=-1))
         else:
             self.hx[mask_padding], self.cx[mask_padding] = self.lstm(x, (self.hx[mask_padding], self.cx[mask_padding]))
+            x = self.emb_linear(torch.cat([x, self.hx[mask_padding]], dim=-1))
 
-        x = self.emb_linear(torch.cat([x, self.hx], dim=-1))
         x = torch.nn.functional.mish(x)
 
         full_logits = rearrange(self.actor_linear(x), 'b a -> b 1 a')
+        means_values = rearrange(self.critic_linear(x), 'b 1 -> b 1 1')
+
+        if mask_padding is not None:
+            full_logits_placeholder = torch.zeros((self.hx.size(0), *full_logits.shape[1:]),
+                                                  dtype=full_logits.dtype,
+                                                  device=full_logits.device)
+            full_logits_placeholder[mask_padding] = full_logits
+            full_logits = full_logits_placeholder
+
+            means_values_placeholder = torch.zeros((self.hx.size(0), *means_values.shape[1:]),
+                                                   dtype=means_values.dtype,
+                                                   device=means_values.device)
+            means_values_placeholder[mask_padding] = means_values
+            means_values = means_values_placeholder
+
         logits_actions = full_logits[...,
                          :self.act_vocab_size]
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
         std_continuous = F.softplus(std_continuous) + 1E-3  # [-inf, inf] -> [0, inf]
-        means_values = rearrange(self.critic_linear(x), 'b 1 -> b 1 1')
 
         return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 
@@ -152,12 +172,12 @@ class ActorCritic(nn.Module):
             if logit.size(-1) == 1:
                 d = Bernoulli(logits=logit)
                 action = d.sample()
-                if torch.rand() < eps:
+                if torch.rand(1) < eps:
                     action = torch.randint(0, 2, size=action.shape)
             else:
-                d = Categorical(logits=logit.unsqueeze(0))
+                d = Categorical(logits=logit.unsqueeze(1))
                 action = d.sample()
-                if torch.rand() < eps:
+                if torch.rand(1) < eps:
                     action = torch.randint(0, logit.size(-1), size=action.shape)
 
             actions.append(action)
@@ -170,14 +190,14 @@ class ActorCritic(nn.Module):
         log_probs, entropies = [], []
         for logit, action in zip(logits_per_action_type, action_per_type):
             if logit.size(-1) == 1:
-                d = Bernoulli(logits=logit[:, :-1])
+                d = Bernoulli(logits=logit)
             else:
-                d = Categorical(logits=logit[:, :-1, None, :])
-            log_probs.append(d.log_prob(action[:, :-1]))
+                d = Categorical(logits=logit[:, :, None, :])
+            log_probs.append(d.log_prob(action[:, :]))
             entropies.append(d.entropy())
-        d_cont = Normal(out.continuous_means[:, :-1], out.continuous_stds[:, :-1])
+        d_cont = Normal(out.continuous_means, out.continuous_stds)
         return (torch.cat(log_probs, dim=-1), torch.cat(entropies, dim=-1)), \
-               (d_cont.log_prob(out.actions_continuous[:, :-1]), d_cont.entropy())
+               (d_cont.log_prob(out.actions_continuous), d_cont.entropy())
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, world_model: WorldModel, imagine_horizon: int,
                      gamma: float, lambda_: float, entropy_weight: float, **kwargs: Any) -> LossWithIntermediateLosses:

@@ -68,6 +68,28 @@ class EpisodesDataset:
         self.newly_modified_episodes.add(episode_id)
         return episode_id
 
+    def sample_replay(self, batch_num_samples: int = None, weights: Optional[Tuple[float]] = None, samples=None):
+        if samples is None:
+            num_episodes = len(self.episodes)
+            num_weights = len(weights) if weights is not None else 0
+
+            assert all([0 <= x <= 1 for x in weights]) and sum(weights) == 1
+            sizes = [num_episodes // num_weights + (num_episodes % num_weights) * (i == num_weights - 1) for i in
+                     range(num_weights)]
+            weights = [w / s for (w, s) in zip(weights, sizes) for _ in range(s)]
+            sampled_episodes = random.choices(self.episodes, k=batch_num_samples, weights=weights)
+        else:
+            sampled_episodes = [self.episodes[i] for i in samples]
+
+        max_len = max(len(ep) for ep in sampled_episodes)
+        sampled_episodes_segments = []
+        for sampled_episode in sampled_episodes:
+            start = len(sampled_episode) - max_len
+            stop = len(sampled_episode)
+            sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
+
+        return self._collate_episodes_segments(sampled_episodes_segments)
+
     def sample_batch(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]] = None,
                      sample_from_start: bool = True) -> Batch:
         return self._collate_episodes_segments(
@@ -94,7 +116,7 @@ class EpisodesDataset:
                 start = random.randint(0, len(sampled_episode) - 1)
                 stop = start + sequence_length
             else:
-                stop = random.randint(1, len(sampled_episode))
+                stop = random.randint(min(39, len(sampled_episode)), len(sampled_episode))  # 39 = total - burn in - 1
                 start = stop - sequence_length
             sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
             assert len(sampled_episodes_segments[-1]) == sequence_length
@@ -104,7 +126,8 @@ class EpisodesDataset:
         episodes_segments = [e_s.__dict__ for e_s in episodes_segments]
         batch = {}
         for k in episodes_segments[0]:
-            batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
+            if isinstance(episodes_segments[0][k], torch.Tensor):
+                batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
         batch['observations'] = batch['observations'].float() / 255.0  # int8 to float and scale
         if self.resolution is not None:
             to_resize = rearrange(batch['observations'], 'b t ... -> (b t) ...')

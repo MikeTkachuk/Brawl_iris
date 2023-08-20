@@ -19,6 +19,7 @@ class Episode:
     rewards: torch.FloatTensor
     ends: torch.LongTensor
     mask_padding: torch.BoolTensor
+    weight: float = 0.0
 
     def __post_init__(self):
         assert len(self.observations) == len(self.actions) == len(self.actions_continuous)\

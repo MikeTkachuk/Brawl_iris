@@ -496,7 +496,7 @@ class Trainer:
 
         return to_log
 
-    def _save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
+    def _save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True, flush=True) -> None:
         torch.save(self.agent.state_dict(), self.ckpt_dir / 'last.pt')
         if not save_agent_only:
             torch.save(epoch, self.ckpt_dir / 'epoch.pt')
@@ -508,14 +508,14 @@ class Trainer:
             ckpt_dataset_dir = self.ckpt_dir / 'dataset'
             ckpt_dataset_dir.mkdir(exist_ok=True, parents=False)
             if save_dataset:
-                self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir)
+                self.train_dataset.update_disk_checkpoint(ckpt_dataset_dir, flush=flush)
             if self.cfg.evaluation.should:
                 torch.save(self.test_dataset.num_seen_episodes, self.ckpt_dir / 'num_seen_episodes_test_dataset.pt')
 
-    def save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True) -> None:
+    def save_checkpoint(self, epoch: int, save_agent_only: bool, save_dataset=True, flush=True) -> None:
         tmp_checkpoint_dir = Path('checkpoints_tmp')
         shutil.copytree(src=self.ckpt_dir, dst=tmp_checkpoint_dir, ignore=shutil.ignore_patterns('dataset'))
-        self._save_checkpoint(epoch, save_agent_only, save_dataset=save_dataset)
+        self._save_checkpoint(epoch, save_agent_only, save_dataset=save_dataset, flush=flush)
         shutil.rmtree(tmp_checkpoint_dir)
 
     def load_checkpoint(self, load_dataset=True, load_episodes=True, agent_only=False) -> None:
