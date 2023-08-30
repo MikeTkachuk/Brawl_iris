@@ -57,6 +57,8 @@ def main(cfg: DictConfig):
 
         f"aws s3 cp \"s3://{cfg.cloud.bucket_name}/{run_prefix}\" ~ --recursive --quiet",
 
+        f"unzip -q Brawl_iris.zip -d Brawl_iris",
+
         f"sh {repo_root.name}/src/aws/run_pretrain.sh {run_prefix}",
     ]
 

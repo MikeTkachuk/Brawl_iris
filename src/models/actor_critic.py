@@ -41,22 +41,86 @@ class ImagineOutput:
     ends: torch.BoolTensor
 
 
+class ResnetBlock(nn.Module):
+    def __init__(self, *, in_channels: int, out_channels: int = None, conv_shortcut: bool = False,
+                 dropout: float) -> None:
+        super().__init__()
+        self.in_channels = in_channels
+        out_channels = in_channels if out_channels is None else out_channels
+        self.out_channels = out_channels
+        self.use_conv_shortcut = conv_shortcut
+
+        self.norm1 = Normalize(in_channels)
+        self.conv1 = torch.nn.Conv2d(in_channels,
+                                     out_channels,
+                                     kernel_size=3,
+                                     stride=1,
+                                     padding=1)
+
+        self.norm2 = Normalize(out_channels)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.conv2 = torch.nn.Conv2d(out_channels,
+                                     out_channels,
+                                     kernel_size=3,
+                                     stride=1,
+                                     padding=1)
+
+        self.nonlinearity = nn.Mish()
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                self.conv_shortcut = torch.nn.Conv2d(in_channels,
+                                                     out_channels,
+                                                     kernel_size=3,
+                                                     stride=1,
+                                                     padding=1)
+            else:
+                self.nin_shortcut = torch.nn.Conv2d(in_channels,
+                                                    out_channels,
+                                                    kernel_size=1,
+                                                    stride=1,
+                                                    padding=0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = x
+        h = self.norm1(h)
+        h = self.nonlinearity(h)
+        h = self.conv1(h)
+
+        h = self.norm2(h)
+        h = self.nonlinearity(h)
+        h = self.dropout(h)
+        h = self.conv2(h)
+
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                x = self.conv_shortcut(x)
+            else:
+                x = self.nin_shortcut(x)
+
+        return x + h
+
+
 class Backbone(nn.Module):
     def __init__(self):
         super().__init__()
-        channels = [3, 32, 32, 48, 48, 64, 64, 64]
-        kernels = [7, 5, 5, 3, 3, 3, 3]
-        strides = [1, 1, 2, 1, 2, 1, 1]
-        paddings = [3, 2, 0, 1, 0, 1, 0]
-        pools = [1, 1, 1, 1, 2, 2, 2]
-        self.skip_connection = [False, True, False, True, False, False, False]
+        channels = [3, 64, 80, 128, 256, 256, 256]  # [3, 32, 32, 48, 48, 64, 64, 64]
+        kernels = [7, 5, 5, 3, 3, 3]
+        strides = [1, 1, 1, 1, 1, 1]
+        paddings = [3, 2, 2, 1, 1, 1]
+        pools = [2, 2, 2, 2, 2, 2]
+        resnet_block = [False, False, True, True, True, True]
         self.blocks = nn.ModuleList()
 
-        for i, (st, ker, pad, pool) in enumerate(zip(strides, kernels, paddings, pools)):
+        for i, (st, ker, pad, pool, is_res_block) in enumerate(zip(strides, kernels, paddings, pools, resnet_block)):
             block = nn.Sequential()
-            conv = nn.Conv2d(channels[i], channels[i + 1], kernel_size=ker, stride=st, padding=pad)
-            block.append(conv)
-            block.append(Normalize(channels[i + 1]))
+            if is_res_block:
+                block.append(ResnetBlock(in_channels=channels[i],
+                                         out_channels=channels[i + 1],
+                                         dropout=0.01))
+            else:
+                conv = nn.Conv2d(channels[i], channels[i + 1], kernel_size=ker, stride=st, padding=pad)
+                block.append(conv)
+                block.append(Normalize(channels[i + 1]))
             if pool == 1:
                 block.append(nn.Identity())
             else:
@@ -65,11 +129,8 @@ class Backbone(nn.Module):
             self.blocks.append(block)
 
     def forward(self, x):
-        for block, do_skip in zip(self.blocks, self.skip_connection):
-            if do_skip:
-                x = x + block(x)
-            else:
-                x = block(x)
+        for block in self.blocks:
+            x = block(x)
         return x
 
 
@@ -80,7 +141,7 @@ class ActorCritic(nn.Module):
         self.action_split = [1, 1, 1, 1, 4, 4]
 
         self.backbone = Backbone()
-        self.emb_dim = 1024
+        self.emb_dim = 2304
         self.lstm_dim = 512
         self.lstm = nn.LSTMCell(self.emb_dim, self.lstm_dim)
         self.hx, self.cx = None, None
@@ -124,7 +185,20 @@ class ActorCritic(nn.Module):
         assert inputs.ndim == 4  # and inputs.shape[1:] == (3, 64, 64)
         assert 0 <= inputs.min() <= 1 and 0 <= inputs.max() <= 1
         assert mask_padding is None or (
-                mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0) and mask_padding.any())
+                mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0))
+
+        if not mask_padding.any():
+            # noinspection PyTypeChecker
+            return ActorCriticOutput(
+                logits_actions=torch.zeros((mask_padding.size(0), 1, self.act_vocab_size),
+                                           dtype=self.hx.dtype, device=self.device),
+                mean_continuous=torch.zeros((mask_padding.size(0), 1, self.act_continuous_size),
+                                            dtype=self.hx.dtype, device=self.device),
+                std_continuous=torch.ones((mask_padding.size(0), 1, self.act_continuous_size),
+                                          dtype=self.hx.dtype, device=self.device),
+                means_values=torch.zeros((mask_padding.size(0), 1, 1),
+                                         dtype=self.hx.dtype, device=self.device)
+            )
 
         x = inputs[mask_padding] if mask_padding is not None else inputs
 
@@ -160,8 +234,10 @@ class ActorCritic(nn.Module):
         logits_actions = full_logits[...,
                          :self.act_vocab_size]
         mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
+        mean_continuous = 5 * F.tanh(mean_continuous / 5)  # soft clamp logits to [-5, 5]
         std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
-        std_continuous = F.softplus(std_continuous) + 1E-3  # [-inf, inf] -> [0, inf]
+        std_continuous = 5 * F.tanh(std_continuous / 5)  # soft clamp to [-5, 5]
+        std_continuous = F.softplus(std_continuous) - 0.0057  # [-5, 5] -> [1E-3, 5] -0.0057 = 1E-3 - softplus(-5)
 
         return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 

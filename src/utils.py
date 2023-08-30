@@ -81,7 +81,7 @@ def compute_lambda_returns(rewards, values, ends, gamma, lambda_):
     assert rewards.shape == ends.shape == values.shape, f"{rewards.shape}, {values.shape}, {ends.shape}"  # (B, T, 1)
     t = rewards.size(1)
     lambda_returns = torch.empty_like(values)
-    lambda_returns[:, -1] = (1.0 if not ends[:, -1] else 0.3) * values[:, -1]
+    lambda_returns[:, -1] = (1.0 if not ends[:, -1] else 1.0) * values[:, -1]  # TODO to be checked
     lambda_returns[:, :-1] = rewards[:, :-1] + ends[:, :-1].logical_not() * gamma * (1 - lambda_) * values[:, 1:]
 
     last = lambda_returns[:, -1]

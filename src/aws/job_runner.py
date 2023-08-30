@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 import os
 from typing import Iterable, Union
+import zipfile
 
 import boto3
 
@@ -44,19 +45,26 @@ class JobRunner:
 
         # upload code if not already
         if storage_client.list_objects_v2(Bucket=self.bucket_name,
-                                          Prefix=f"{self.run_prefix}/{repo_root.name}"
-                                          )['KeyCount'] < 3:
+                                          Prefix=f"{self.run_prefix}/{repo_root.name}.zip"
+                                          )['KeyCount'] < 1:
+            zip_path = Path(repo_root.name + '.zip')
+            with zipfile.ZipFile(zip_path, mode='w') as zip_code:
+                for file in repo_root.rglob("*"):
+                    rel_file = file.relative_to(repo_root)
+                    if Path(".git") in rel_file.parents or \
+                            Path(".idea") in rel_file.parents or \
+                            Path("results") in rel_file.parents or \
+                            Path("assets") in rel_file.parents or \
+                            Path("src/outputs") in rel_file.parents:
+                        continue
+                    zip_code.write(file, arcname=rel_file)
+
             print('JobRunner.upload_code: code upload started')
             # upload code if needed
-            name_on_bucket = f"{self.run_prefix}/{repo_root.name}"
-            os.system(f'aws s3 cp {repo_root} s3://{self.bucket_name}/{name_on_bucket} '
-                      f'--exclude ".git/*" '
-                      f'--exclude ".idea/*" '
-                      f'--exclude "results/*" '
-                      f'--exclude "assets/*" '
-                      f'--exclude "src/outputs/*" '
-                      f'--recursive '
+            name_on_bucket = f"{self.run_prefix}/{zip_path}"
+            os.system(f'aws s3 cp {zip_path} s3://{self.bucket_name}/{name_on_bucket} '
                       f'--quiet')
+            zip_path.unlink()
             print('JobRunner.upload_code: code upload finished')
         else:
             print('JobRunner.upload_code: Skipped code upload')
@@ -68,7 +76,6 @@ class JobRunner:
         self.upload_code(s3_client)
 
     def run(self):
-
         self.init_job()
         with self.instance_context:
             self.instance_context.connect(self.ssh_file_path)

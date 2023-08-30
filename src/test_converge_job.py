@@ -1,26 +1,21 @@
+import copy
 import os
+import time
 from pathlib import Path
-import shutil
+from threading import Thread, Event
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import wandb
 import boto3
 
+from src.aws.compute_instance import InstanceContext
 from src.trainer import Trainer
 from src.aws.job_runner import JobRunner
 from src.aws.logger import LogListener
-from src.trainer import log_metrics, log_image, log_histogram
+from src.trainer import log_metrics
 
 DATA_PREFIX = "pretrain_data/eve/solo_showdown"
-
-
-def init_dataset():
-    dst = Path("/home/ec2-user/checkpoints/dataset")
-    dst.mkdir(parents=True, exist_ok=False)
-    for i, file in enumerate((Path("/home/ec2-user") / DATA_PREFIX).rglob("*.pt")):
-        file.rename(dst / f"{i}.pt")
-    shutil.rmtree(Path("/home/ec2-user") / Path(DATA_PREFIX).parts[0])
 
 
 @hydra.main(config_path="../config", config_name="trainer")
@@ -44,22 +39,14 @@ def main(cfg: DictConfig):
 
     s3_client = boto3.client('s3')
     logger_metrics = LogListener(log_metrics, cfg.cloud.log_metrics, cfg.cloud.bucket_name, s3_client)
-    logger_reconstructions = LogListener(log_image,
-                                         cfg.cloud.log_reconstruction,
-                                         cfg.cloud.bucket_name,
-                                         s3_client,
-                                         'reconstructions')
-    trainer.log_listeners = [logger_metrics, logger_reconstructions]
+    trainer.log_listeners = [logger_metrics, ]
     trainer.prepare_job()
     commands = [
-        "rm -r Brawl_iris checkpoints",
-        f"aws s3 cp \"s3://{cfg.cloud.bucket_name}/{DATA_PREFIX}\" /home/ec2-user/{DATA_PREFIX} --recursive --quiet",
+        "rm -r Brawl_iris.zip Brawl_iris checkpoints",
 
         f"aws s3 cp \"s3://{cfg.cloud.bucket_name}/{run_prefix}\" ~ --recursive --quiet",
-
         f"unzip -q Brawl_iris.zip -d Brawl_iris",
-
-        f"sh {repo_root.name}/src/aws/run_pretrain.sh {run_prefix}",
+        f"sh {repo_root.name}/src/aws/test_converge.sh {run_prefix}",
     ]
 
     job_runner = JobRunner(cfg.cloud.bucket_name,
@@ -70,7 +57,36 @@ def main(cfg: DictConfig):
                            commands,
                            trainer.log_listeners,
                            )
+
+    def gpu_stats_thread_func(stop_key: Event):
+        while True:
+            if stop_key.is_set():
+                return
+            try:
+                instance_context = InstanceContext(cfg.cloud.instance_id, cfg.cloud.region_name)
+                instance_context.connect(cfg.cloud.key_file)
+                break
+            except Exception as e:
+                print(e)
+                seconds_to_sleep = 20
+                print(f"Async connection: Could not connect to instance at this time, retrying in {seconds_to_sleep} seconds")
+                time.sleep(seconds_to_sleep)
+
+        for i in range(50):
+            if stop_key.is_set():
+                return
+            instance_context.exec_command(
+                "nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.total,memory.free,memory.used "
+                "--format=csv", quiet=True)
+            time.sleep(5)
+
+    gpu_thread_handle = Event()
+    gpu_thread = Thread(target=gpu_stats_thread_func, args=(gpu_thread_handle,))
+    gpu_thread.start()
+
     job_runner.run()
+    gpu_thread_handle.set()
+    gpu_thread.join()
 
     wandb.finish()
 

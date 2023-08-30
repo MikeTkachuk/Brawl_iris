@@ -33,17 +33,21 @@ class InstanceContext:
         self.command_client = client
         print('aws.InstanceContext: connected successfully')
 
-    def exec_command(self, command):
+    def exec_command(self, command, quiet=False):
         if self.command_client is None:
             raise RuntimeError(f"Not connected to instance. Please make sure to call {self}.connect beforehand")
-        print(f'aws.InstanceContext: running {command}')
-        stdin, stdout, stderr = self.command_client.exec_command(command)
-        stdin.close()
-        for line in iter(stdout.readline, ""):  # https://docs.python.org/3/library/functions.html#iter
-            print(line, end="")
-        for line in iter(stderr.readline, ""):  # https://docs.python.org/3/library/functions.html#iter
-            print(line, end="")
-        print(f'aws.InstanceContext: finished execution')
+        try:
+            print(f'aws.InstanceContext: running {command}') if not quiet else None
+            stdin, stdout, stderr = self.command_client.exec_command(command)
+            stdin.close()
+            for line in iter(stdout.readline, ""):  # https://docs.python.org/3/library/functions.html#iter
+                print(line, end="")
+            for line in iter(stderr.readline, ""):  # https://docs.python.org/3/library/functions.html#iter
+                print(line, end="")
+            print(f'aws.InstanceContext: finished execution') if not quiet else None
+        except paramiko.ssh_exception.SSHException as e:
+            print(e)
+            print("Failed to execute command. Connection was closed")
 
     @property
     def ip(self):
