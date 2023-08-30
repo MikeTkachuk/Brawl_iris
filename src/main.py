@@ -10,7 +10,7 @@ from trainer import Trainer
 
 @hydra.main(config_path="../config", config_name="trainer")
 def main(cfg: DictConfig):
-    shutil.copytree(r"C:\Users\Mykhailo_Tkachuk\PycharmProjects\Brawl-Stars-AI\outputs\2023-07-15\19-41-49\checkpoints",
+    shutil.copytree(r"C:\Users\Mykhailo_Tkachuk\PycharmProjects\Brawl-Stars-AI\outputs\2023-08-07\11-19-22\checkpoints",
                     "checkpoints", dirs_exist_ok=True)
     should_configure = False
 
@@ -46,7 +46,7 @@ def main(cfg: DictConfig):
     configure_for_benchmark()
     trainer = Trainer(cfg, cloud_instance=True)
     trainer.train_dataset.load_disk_checkpoint(trainer.ckpt_dir / 'dataset')
-    trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\Downloads\last.pt", 'cpu')
+    trainer.agent.load(r"C:\Users\Mykhailo_Tkachuk\PycharmProjects\Brawl-Stars-AI\outputs\2023-08-26\21-28-23\checkpoints\last.pt", 'cpu', False, False)
     for i in range(1, 20):
         trainer.train_agent(i)
 

@@ -318,6 +318,8 @@ class Trainer:
                 f"--recursive "
                 f"--quiet",
 
+                f"unzip -q {repo_root.name}.zip -d {repo_root.name}",
+
                 # TODO (not important) save env_actions in config
                 f"sh {repo_root.name}/src/aws/run.sh {self.run_prefix}",
             ]
