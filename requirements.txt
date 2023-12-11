@@ -1,5 +1,9 @@
-ale-py==0.7.4
+ale-py==0.8.1  # 0.7.4 original
 einops==0.3.2
+# gym 0.21 needs these
+setuptools==65.5.0
+wheel==0.38.4
+# end
 gym[accept-rom-license]==0.21.0
 hydra-core==1.1.1
 opencv-python
@@ -9,7 +13,9 @@ psutil==5.8.0
 pygame==2.1.2
 tqdm==4.62.3
 wandb==0.12.7
-torch==1.12.1
-torchvision==0.13.1
+--extra-index-url https://download.pytorch.org/whl/cu116
+torch==1.12.1+cu116
+--extra-index-url https://download.pytorch.org/whl/cu116
+torchvision==0.13.1+cu116
 boto3==1.26.*
 paramiko==3.2.0

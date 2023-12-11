@@ -10,6 +10,7 @@ from torch.distributions.normal import Normal
 from torch.distributions.bernoulli import Bernoulli
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from tqdm import tqdm
 
 from src.dataset import Batch
@@ -135,12 +136,14 @@ class Backbone(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False) -> None:
+    def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False, checkpoint_backbone=False) -> None:
         super().__init__()
         self.use_original_obs = use_original_obs
+        self.checkpoint_backbone = checkpoint_backbone
         self.action_split = [1, 1, 1, 1, 4, 4]
 
         self.backbone = Backbone()
+
         self.emb_dim = 2304
         self.lstm_dim = 512
         self.lstm = nn.LSTMCell(self.emb_dim, self.lstm_dim)
@@ -149,10 +152,10 @@ class ActorCritic(nn.Module):
         self.emb_linear = nn.Linear(self.emb_dim + self.lstm_dim, self.lstm_dim)
         self.act_vocab_size = sum(self.action_split)
         self.act_continuous_size = act_continuous_size
-        self.critic_linear = nn.Linear(self.lstm_dim, 1)
         self.actor_linear = nn.Linear(self.lstm_dim,
                                       self.act_vocab_size + 2 * self.act_continuous_size
                                       )  # add more entries for continuous (2*x) for mean and std
+        self.critic_linear = nn.Linear(self.lstm_dim, 1)
 
     def __repr__(self) -> str:
         return "actor_critic"
@@ -203,7 +206,10 @@ class ActorCritic(nn.Module):
         x = inputs[mask_padding] if mask_padding is not None else inputs
 
         x = x.mul(2).sub(1)
-        x = self.backbone(x)
+        if self.checkpoint_backbone:
+            x = torch.utils.checkpoint.checkpoint(self.backbone, x, use_reentrant=False)
+        else:
+            x = self.backbone(x)
         x = torch.flatten(x, start_dim=1)
 
         if mask_padding is None:
@@ -249,12 +255,12 @@ class ActorCritic(nn.Module):
                 d = Bernoulli(logits=logit)
                 action = d.sample()
                 if torch.rand(1) < eps:
-                    action = torch.randint(0, 2, size=action.shape)
+                    action = torch.randint(0, 2, size=action.shape, device=logit.device)
             else:
                 d = Categorical(logits=logit.unsqueeze(1))
                 action = d.sample()
                 if torch.rand(1) < eps:
-                    action = torch.randint(0, logit.size(-1), size=action.shape)
+                    action = torch.randint(0, logit.size(-1), size=action.shape, device=logit.device)
 
             actions.append(action)
         d_cont = Normal(out.mean_continuous, out.std_continuous)
