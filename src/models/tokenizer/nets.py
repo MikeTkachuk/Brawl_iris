@@ -208,8 +208,11 @@ def nonlinearity(x: torch.Tensor) -> torch.Tensor:
     return x * torch.sigmoid(x)
 
 
-def Normalize(in_channels: int) -> nn.Module:
-    return torch.nn.GroupNorm(num_groups=16, num_channels=in_channels, eps=1e-6, affine=True)
+def Normalize(in_channels: int, num_groups=16) -> nn.Module:
+    return torch.nn.GroupNorm(num_groups=num_groups,
+                              num_channels=in_channels,
+                              eps=1e-6,
+                              affine=True)
 
 
 class Upsample(nn.Module):

@@ -1,3 +1,7 @@
+hydra:
+  run:
+    dir: ./outputs/${wandb.name}/${now:%Y-%m-%d_%H-%M-%S}
+
 defaults:
   - _self_
   - tokenizer: default
@@ -12,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "value_norm"
+  name: "full_no_val_norm_lam099_lr1e-6"
   group: null
   tags: null
   notes: ""
@@ -27,6 +31,7 @@ initialization:
 common:
   epochs: 600
   device: "cuda:0"
+  fp16: False
   do_checkpoint: True
   seed: 0
   sequence_length: ${world_model.max_blocks}
@@ -67,7 +72,7 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 0.00003
+  learning_rate: 1e-6
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
@@ -91,9 +96,13 @@ training:
     imagine_horizon: ${common.sequence_length}
     burn_in: 60
     gamma: 0.995
-    lambda_: 0.95
-    entropy_weight: 0.05
-    entropy_continuous_weight: 0.01
+    lambda_warmup_init: 0.95
+    lambda_: 0.99 # 0.95
+    entropy_weight: 0.005
+    entropy_continuous_weight: 0.001
+    checkpoint_backbone: True
+    lr_warmup_scale: 0.1
+    lr_warmup_steps: 10
 
 evaluation:
   should: False
