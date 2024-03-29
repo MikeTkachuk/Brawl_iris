@@ -159,7 +159,8 @@ class Trainer:
         self.optimizer_world_model = configure_optimizer(self.agent.world_model, self.cfg.training.learning_rate,
                                                          self.cfg.training.world_model.weight_decay)
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(),
-                                                       lr=self.cfg.training.learning_rate)
+                                                       lr=self.cfg.training.learning_rate,
+                                                       betas=self.cfg.training.actor_critic.adam_betas)
 
         if not self.cloud_instance:
             self.from_pretrained()

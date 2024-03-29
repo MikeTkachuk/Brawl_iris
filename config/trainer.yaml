@@ -16,10 +16,10 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "full_no_val_norm_lam099_lr1e-6"
+  name: "large_accumulation2"
   group: null
   tags: null
-  notes: ""
+  notes: "weaker momentum, more collection steps, no replacement, lower entropy"
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -31,11 +31,75 @@ initialization:
 common:
   epochs: 600
   device: "cuda:0"
-  fp16: False
+  fp16: False  # when True consumes *more* memory (benchmarked)
   do_checkpoint: True
   seed: 0
   sequence_length: ${world_model.max_blocks}
   resume: False # run prefix on bucket or False. Loads full checkpoint
+
+cloud:
+  region_name: "us-east-1"
+  bucket_name: "brawl-stars-iris"
+  instance_id: "i-0e9cb879b7a6f87c7"
+  key_file: "C:\\Users\\Mykhailo_Tkachuk\\keypair1.pem"
+  log_metrics: "logs/metrics.json"  # used for logging
+  log_reconstruction: "logs/reconstruction.jpg"  # used for logging
+
+training:
+  should: True
+  on_cloud: True
+  epochs_per_job: 1 # number of epochs to be run per job submission
+  learning_rate: 1e-3
+  sampling_weights: [0.125, 0.125, 0.25, 0.5]
+  tokenizer:
+    batch_num_samples: 8 # max 24 # old 256
+    grad_acc_steps: 1
+    max_grad_norm: 10.0
+    start_after_epochs: 99999
+    steps_per_epoch: 200
+  world_model:
+    batch_num_samples: 8 # max 14 # old 64
+    grad_acc_steps: 1
+    max_grad_norm: 10.0
+    weight_decay: 0.01
+    start_after_epochs: 99999
+    steps_per_epoch: 200
+  actor_critic:
+    start_after_epochs: 0
+    batch_num_samples: 32
+    grad_acc_steps: 12
+    collection_steps: 5
+    steps_per_epoch: 100
+    imagine_horizon: ${common.sequence_length}
+    lr_warmup_scale: 0.1
+    lr_warmup_steps: 30
+    adam_betas: [0.7, 0.95]
+    entropy_weight: 0.0035
+    entropy_continuous_weight: 0.0035
+    agc_lambda: 0.08
+    max_grad_norm: 3.0 # 10.0
+    burn_in: 60
+    lambda_warmup_init: False
+    lambda_: 0.95
+    gamma: 0.995
+    checkpoint_backbone: True
+    checkpoint_lstm: True
+
+
+evaluation:
+  should: False
+  every: 5
+  tokenizer:
+    batch_num_samples: ${training.tokenizer.batch_num_samples}
+    start_after_epochs: ${training.tokenizer.start_after_epochs}
+    save_reconstructions: True
+  world_model:
+    batch_num_samples: ${training.world_model.batch_num_samples}
+    start_after_epochs: ${training.world_model.start_after_epochs}
+  actor_critic:
+    num_episodes_to_save: ${training.actor_critic.batch_num_samples}
+    horizon: ${training.actor_critic.imagine_horizon}
+    start_after_epochs: ${training.actor_critic.start_after_epochs}
 
 collection:
   train:
@@ -59,62 +123,3 @@ collection:
       num_episodes: 16
       burn_in: ${training.actor_critic.burn_in}
       speed_constraint: ${collection.train.config.speed_constraint}
-
-cloud:
-  region_name: "us-east-1"
-  bucket_name: "brawl-stars-iris"
-  instance_id: "i-0e9cb879b7a6f87c7"
-  key_file: "C:\\Users\\Mykhailo_Tkachuk\\keypair1.pem"
-  log_metrics: "logs/metrics.json"  # used for logging
-  log_reconstruction: "logs/reconstruction.jpg"  # used for logging
-
-training:
-  should: True
-  on_cloud: True
-  epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 1e-6
-  sampling_weights: [0.125, 0.125, 0.25, 0.5]
-  tokenizer:
-    batch_num_samples: 8 # max 24 # old 256
-    grad_acc_steps: 1
-    max_grad_norm: 10.0
-    start_after_epochs: 99999
-    steps_per_epoch: 200
-  world_model:
-    batch_num_samples: 8 # max 14 # old 64
-    grad_acc_steps: 1
-    max_grad_norm: 10.0
-    weight_decay: 0.01
-    start_after_epochs: 99999
-    steps_per_epoch: 200
-  actor_critic:
-    batch_num_samples: 32 # max 24 # old 64
-    grad_acc_steps: 1
-    max_grad_norm: 10.0
-    start_after_epochs: 0
-    steps_per_epoch: 100
-    imagine_horizon: ${common.sequence_length}
-    burn_in: 60
-    gamma: 0.995
-    lambda_warmup_init: 0.95
-    lambda_: 0.99 # 0.95
-    entropy_weight: 0.005
-    entropy_continuous_weight: 0.001
-    checkpoint_backbone: True
-    lr_warmup_scale: 0.1
-    lr_warmup_steps: 10
-
-evaluation:
-  should: False
-  every: 5
-  tokenizer:
-    batch_num_samples: ${training.tokenizer.batch_num_samples}
-    start_after_epochs: ${training.tokenizer.start_after_epochs}
-    save_reconstructions: True
-  world_model:
-    batch_num_samples: ${training.world_model.batch_num_samples}
-    start_after_epochs: ${training.world_model.start_after_epochs}
-  actor_critic:
-    num_episodes_to_save: ${training.actor_critic.batch_num_samples}
-    horizon: ${training.actor_critic.imagine_horizon}
-    start_after_epochs: ${training.actor_critic.start_after_epochs}

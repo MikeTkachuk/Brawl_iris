@@ -1,5 +1,7 @@
+import os
 from collections import deque
 import math
+from multiprocessing import Pool
 from pathlib import Path
 import random
 from typing import Dict, List, Optional, Tuple
@@ -13,11 +15,17 @@ from src.episode import Episode
 Batch = Dict[str, torch.Tensor]
 
 
+def _helper_segment(episode, start, stop, pad=True):
+    return episode.segment(start, stop, should_pad=pad)
+
+
 class EpisodesDataset:
     def __init__(self,
                  max_num_episodes: Optional[int] = None,
                  name: Optional[str] = None,
-                 resolution: Optional[int] = None) -> None:
+                 resolution: Optional[int] = None,
+                 lazy: bool = False
+                 ) -> None:
         self.max_num_episodes = max_num_episodes
         self.resolution = resolution
         self.name = name if name is not None else 'dataset'
@@ -26,6 +34,10 @@ class EpisodesDataset:
         self.episode_id_to_queue_idx = dict()
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
         self.disk_episodes = deque()
+        self.lazy = lazy
+        self.episode_weights = {}
+
+        self._dir = None
 
     def __len__(self) -> int:
         return len(self.disk_episodes)
@@ -34,21 +46,27 @@ class EpisodesDataset:
         self.episodes = deque()
         self.episode_id_to_queue_idx = dict()
 
-    def add_episode(self, episode: Episode) -> int:
+    def add_episode(self, episode: Episode, weight=0) -> int:
         print('dataset.Dataset.add_episode: ADD DATASET LOGGING')
         print(len(self.episodes), self.max_num_episodes)
         if self.max_num_episodes is not None and len(self.disk_episodes) == self.max_num_episodes:
             self._popleft()
         episode_id = self._append_new_episode(episode)
+        self.episode_weights[episode_id] = weight
         print('dataset.Dataset.add_episode: AFTER ADD DATASET LOGGING')
         print(self.newly_deleted_episodes)
         return episode_id
 
     def get_episode(self, episode_id: int) -> Episode:
         assert episode_id in self.disk_episodes
-        assert episode_id in self.episode_id_to_queue_idx, f"Episode {episode_id} is not loaded"
-        queue_idx = self.episode_id_to_queue_idx[episode_id]
-        return self.episodes[queue_idx]
+        if episode_id in self.episode_id_to_queue_idx:
+            queue_idx = self.episode_id_to_queue_idx[episode_id]
+            return self.episodes[queue_idx]
+        if self.lazy:
+            assert self._dir is not None, "Dataset was not loaded properly"
+            episode = Episode(**torch.load(self._dir / f'{episode_id}.pt'))
+            return episode
+        raise Exception(f"Episode {episode_id} is not loaded")
 
     def _popleft(self) -> int:
         id_to_delete = self.disk_episodes.popleft()
@@ -70,19 +88,26 @@ class EpisodesDataset:
 
     def sample_replay(self, batch_num_samples: int = None, weights: Optional[Tuple[float]] = None, samples=None):
         if samples is None:
-            num_episodes = len(self.episodes)
+            episode_pool = self.episodes if not self.lazy else self.disk_episodes
+            num_episodes = len(episode_pool)
             num_weights = len(weights) if weights is not None else 0
 
             assert all([0 <= x <= 1 for x in weights]) and sum(weights) == 1
             sizes = [num_episodes // num_weights + (num_episodes % num_weights) * (i == num_weights - 1) for i in
                      range(num_weights)]
             weights = [w / s for (w, s) in zip(weights, sizes) for _ in range(s)]
-            sampled_episodes = random.choices(self.episodes, k=batch_num_samples, weights=weights)
+            sampled_episodes = random.choices(episode_pool, k=batch_num_samples, weights=weights)
+            if self.lazy:
+                sampled_episodes = [self.get_episode(ep) for ep in sampled_episodes]
         else:
-            sampled_episodes = [self.episodes[i] for i in samples]
+            sampled_episodes = [self.get_episode(i) for i in samples]
 
         max_len = max(len(ep) for ep in sampled_episodes)
         sampled_episodes_segments = []
+        # TODO parallelize
+        # with Pool(1) as pool:
+        #     args = [(ep, len(ep) - max_len, len(ep)) for ep in sampled_episodes]
+        #     sampled_episodes_segments = pool.starmap(_helper_segment, args)
         for sampled_episode in sampled_episodes:
             start = len(sampled_episode) - max_len
             stop = len(sampled_episode)
@@ -97,7 +122,8 @@ class EpisodesDataset:
 
     def _sample_episodes_segments(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]],
                                   sample_from_start: bool) -> List[Episode]:
-        num_episodes = len(self.episodes)
+        episode_pool = self.episodes if not self.lazy else self.disk_episodes
+        num_episodes = len(episode_pool)
         num_weights = len(weights) if weights is not None else 0
 
         if num_weights < num_episodes:
@@ -108,8 +134,9 @@ class EpisodesDataset:
                      range(num_weights)]
             weights = [w / s for (w, s) in zip(weights, sizes) for _ in range(s)]
 
-        sampled_episodes = random.choices(self.episodes, k=batch_num_samples, weights=weights)
-
+        sampled_episodes = random.choices(episode_pool, k=batch_num_samples, weights=weights)
+        if self.lazy:
+            sampled_episodes = [self.get_episode(ep) for ep in sampled_episodes]
         sampled_episodes_segments = []
         for sampled_episode in sampled_episodes:
             if sample_from_start:
@@ -136,7 +163,10 @@ class EpisodesDataset:
         return batch
 
     def traverse(self, batch_num_samples: int, chunk_size: int):
-        for episode in self.episodes:
+        episode_pool = self.episodes if not self.lazy else self.disk_episodes
+        for episode in episode_pool:
+            if self.lazy:
+                episode = self.get_episode(episode)
             chunks = [episode.segment(start=i * chunk_size, stop=(i + 1) * chunk_size, should_pad=True) for i in
                       range(math.ceil(len(episode) / chunk_size))]
             batches = [chunks[i * batch_num_samples: (i + 1) * batch_num_samples] for i in
@@ -146,6 +176,7 @@ class EpisodesDataset:
 
     def update_disk_checkpoint(self, directory: Path, flush=True) -> None:
         assert directory.is_dir()
+        self._dir = directory
         print(f'dataset.Dataset.update_disk_checkpoint: map: {self.episode_id_to_queue_idx}'
               f' n_mod: {self.newly_modified_episodes} n_del: {self.newly_deleted_episodes}')
         num_flushed = len(self.newly_modified_episodes)
@@ -156,16 +187,20 @@ class EpisodesDataset:
         for episode_id in self.newly_deleted_episodes:
             episode_path = directory / f'{episode_id}.pt'
             episode_path.unlink()
+            self.episode_weights.pop(episode_id)
+
+        torch.save(self.episode_weights, directory / "weights.pt")
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
 
         # flush episodes to disk
-        if flush:
+        if flush or self.lazy:
             self.clear()
             print(f'dataset.Dataset.update_disk_checkpoint: flushed {num_flushed} episodes to disk')
 
     def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
         assert directory.is_dir()
-        episode_ids = sorted([int(p.stem) for p in directory.iterdir()])
+        assert not self.episodes, "Repetitive loading"
+        episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem not in ["weights"]])
 
         if not len(episode_ids):
             self.disk_episodes = deque()
@@ -173,8 +208,16 @@ class EpisodesDataset:
             return
 
         self.disk_episodes = deque(episode_ids)
+        self._dir = directory
         self.num_seen_episodes = episode_ids[-1] + 1
-        if load_episodes:
+        try:
+            self.episode_weights = torch.load(directory / "weights.pt")
+        except Exception as e:
+            print("While loading dataset could not load weights. Setting to zero")
+            print("Error: ", e)
+            self.episode_weights = {i: 0.0 for i in episode_ids}
+
+        if load_episodes and not self.lazy:
             for episode_id in episode_ids:
                 episode = Episode(**torch.load(directory / f'{episode_id}.pt'))
                 self.episode_id_to_queue_idx[episode_id] = len(self.episodes)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Optional, Union
 import sys
+from functools import partial
 
 from einops import rearrange
 import numpy as np
@@ -148,10 +149,11 @@ class Backbone(nn.Module):
 
 class ActorCritic(nn.Module):
     def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False,
-                 checkpoint_backbone=False, fp16=False) -> None:
+                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False) -> None:
         super().__init__()
         self.use_original_obs = use_original_obs
         self.checkpoint_backbone = checkpoint_backbone
+        self.checkpoint_lstm = checkpoint_lstm
         self.fp16 = fp16
         self.action_split = [1, 1, 1, 1, 4, 4]
 
@@ -168,9 +170,10 @@ class ActorCritic(nn.Module):
         self.act_vocab_size = sum(self.action_split)
         self.act_continuous_size = act_continuous_size
         self.actor_linear = nn.Linear(self.lstm_dim,
-                                      self.act_vocab_size + 2 * self.act_continuous_size
+                                      self.act_vocab_size + 2 * self.act_continuous_size,
+                                      bias=False
                                       )  # add more entries for continuous (2*x) for mean and std
-        self.critic_linear = nn.Linear(self.lstm_dim, 1)
+        self.critic_linear = nn.Linear(self.lstm_dim, 1, bias=False)
 
     def __repr__(self) -> str:
         return "actor_critic"
@@ -230,13 +233,16 @@ class ActorCritic(nn.Module):
 
             x = self.backbone_norm(x)
             x = torch.flatten(x, start_dim=1)
-
+            if self.checkpoint_lstm:
+                lstm_func = partial(torch.utils.checkpoint.checkpoint, self.lstm, use_reentrant=False)
+            else:
+                lstm_func = self.lstm
             if mask_padding is None:
-                self.hx, self.cx = self.lstm(x, (self.hx, self.cx))
+                self.hx, self.cx = lstm_func(x, (self.hx, self.cx))
                 hx_normed = self.emb_norm(self.hx)
                 x = self.emb_linear(torch.cat([x, hx_normed], dim=-1))
             else:
-                self.hx[mask_padding], self.cx[mask_padding] = self.lstm(x, (self.hx[mask_padding], self.cx[mask_padding]))
+                self.hx[mask_padding], self.cx[mask_padding] = lstm_func(x, (self.hx[mask_padding], self.cx[mask_padding]))
                 hx_normed = self.emb_norm(self.hx[mask_padding])
                 x = self.emb_linear(torch.cat([x, hx_normed], dim=-1))
 

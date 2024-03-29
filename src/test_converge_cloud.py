@@ -1,3 +1,4 @@
+# TODO: lazy dataset not supported
 import os
 import shutil
 import sys

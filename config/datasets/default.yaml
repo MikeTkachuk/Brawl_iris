@@ -1,9 +1,10 @@
 train:
   _target_: src.dataset.EpisodesDataset #RamMonitoring
-  max_num_episodes: 240
+  max_num_episodes: 480
   resolution: 192
   #max_ram_usage: 30G
   name: train_dataset
+  lazy: True
 test:
   _target_: src.dataset.EpisodesDataset
   max_num_episodes: null
