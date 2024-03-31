@@ -199,7 +199,7 @@ class EpisodesDataset:
 
     def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
         assert directory.is_dir()
-        assert not self.episodes, "Repetitive loading"
+        assert not self.episodes or self.lazy, "Repetitive loading"
         episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem not in ["weights"]])
 
         if not len(episode_ids):

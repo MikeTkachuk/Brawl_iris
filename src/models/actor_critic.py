@@ -173,7 +173,9 @@ class ActorCritic(nn.Module):
                                       self.act_vocab_size + 2 * self.act_continuous_size,
                                       bias=False
                                       )  # add more entries for continuous (2*x) for mean and std
-        self.critic_linear = nn.Linear(self.lstm_dim, 1, bias=False)
+        self.critic_head = nn.Sequential(
+            nn.Linear(self.lstm_dim, 1, bias=False),
+        )
 
     def __repr__(self) -> str:
         return "actor_critic"
@@ -210,7 +212,7 @@ class ActorCritic(nn.Module):
             assert mask_padding is None or (
                     mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0))
 
-            if not mask_padding.any():
+            if mask_padding is not None and not mask_padding.any():
                 # noinspection PyTypeChecker
                 return ActorCriticOutput(
                     logits_actions=torch.zeros((mask_padding.size(0), 1, self.act_vocab_size),
@@ -249,7 +251,7 @@ class ActorCritic(nn.Module):
             x = torch.nn.functional.mish(x)
 
             full_logits = rearrange(self.actor_linear(x), 'b a -> b 1 a')
-            means_values = rearrange(self.critic_linear(x), 'b 1 -> b 1 1')
+            means_values = rearrange(self.critic_head(x), 'b 1 -> b 1 1')
 
             if mask_padding is not None:
                 full_logits_placeholder = torch.zeros((self.hx.size(0), *full_logits.shape[1:]),

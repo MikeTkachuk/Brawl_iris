@@ -16,10 +16,10 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "large_accumulation2"
+  name: "bigger_lr_entropy"
   group: null
   tags: null
-  notes: "weaker momentum, more collection steps, no replacement, lower entropy"
+  notes: "same resume but bigger entropy loss and lr"
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -49,7 +49,7 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 1e-3
+  learning_rate: 1e-4
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
@@ -66,16 +66,16 @@ training:
     steps_per_epoch: 200
   actor_critic:
     start_after_epochs: 0
-    batch_num_samples: 32
-    grad_acc_steps: 12
-    collection_steps: 5
+    batch_num_samples: 24
+    grad_acc_steps: 6
+    collection_steps: 3
     steps_per_epoch: 100
     imagine_horizon: ${common.sequence_length}
     lr_warmup_scale: 0.1
     lr_warmup_steps: 30
     adam_betas: [0.7, 0.95]
-    entropy_weight: 0.0035
-    entropy_continuous_weight: 0.0035
+    entropy_weight: 0.01
+    entropy_continuous_weight: 0.01
     agc_lambda: 0.08
     max_grad_norm: 3.0 # 10.0
     burn_in: 60
