@@ -15,7 +15,7 @@ import torch.utils.checkpoint
 from tqdm import tqdm
 
 from src.dataset import Batch
-from src.envs.world_model_env import WorldModelEnv
+# from src.envs.world_model_env import WorldModelEnv
 from src.models.tokenizer import Tokenizer
 from src.models.tokenizer.nets import Normalize
 from src.models.world_model import WorldModel
@@ -45,7 +45,7 @@ class ImagineOutput:
 
 class ResnetBlock(nn.Module):
     def __init__(self, *, in_channels: int, out_channels: int = None, conv_shortcut: bool = False,
-                 dropout: float) -> None:
+                 dropout: float, nonlinearity=nn.Mish()) -> None:
         super().__init__()
         self.in_channels = in_channels
         out_channels = in_channels if out_channels is None else out_channels
@@ -69,7 +69,7 @@ class ResnetBlock(nn.Module):
                                      bias=False)
         self.norm2 = Normalize(out_channels)
 
-        self.nonlinearity = nn.Mish()
+        self.nonlinearity = nonlinearity
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
                 self.conv_shortcut = torch.nn.Conv2d(in_channels,
@@ -104,14 +104,15 @@ class ResnetBlock(nn.Module):
 
 
 class Backbone(nn.Module):
-    def __init__(self):
+    def __init__(self, channels=None, kernels=None, strides=None, paddings=None, pools=None, resnet_blocks=None,
+                 activation=nn.Mish()):
         super().__init__()
-        channels = [3, 64, 80, 128, 256, 256, 256]  # [3, 32, 32, 48, 48, 64, 64, 64]
-        kernels = [7, 5, 5, 3, 3, 3]
-        strides = [1, 1, 1, 1, 1, 1]
-        paddings = [3, 2, 2, 1, 1, 1]
-        pools = [2, 2, 2, 2, 2, 2]
-        resnet_block = [False, False, True, True, True, True]
+        channels = channels or [3, 64, 80, 128, 256, 256, 256]  # [3, 32, 32, 48, 48, 64, 64, 64]
+        kernels = kernels or [7, 5, 5, 3, 3, 3]
+        strides = strides or [1, 1, 1, 1, 1, 1]
+        paddings = paddings or [3, 2, 2, 1, 1, 1]
+        pools = pools or [2, 2, 2, 2, 2, 2]
+        resnet_block = resnet_blocks or [False, False, True, True, True, True]
 
         self.out_channels = channels[-1]
         self.out_width = 3  # for 192 input size
@@ -122,7 +123,7 @@ class Backbone(nn.Module):
             if is_res_block:
                 block.append(ResnetBlock(in_channels=channels[i],
                                          out_channels=channels[i + 1],
-                                         dropout=0.01))
+                                         dropout=0.01, nonlinearity=activation))
             else:
                 conv = nn.Conv2d(channels[i],
                                  channels[i + 1],
@@ -132,7 +133,7 @@ class Backbone(nn.Module):
                                  bias=False)
                 block.append(conv)
                 block.append(Normalize(channels[i + 1]))
-                block.append(nn.Mish())
+                block.append(activation)
             if pool == 1:
                 block.append(nn.Identity())
             else:
@@ -148,16 +149,17 @@ class Backbone(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, act_vocab_size, act_continuous_size, use_original_obs: bool = False,
-                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False) -> None:
+    def __init__(self, action_split, act_continuous_size, use_original_obs: bool = False,
+                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False, activation=nn.Mish()) -> None:
         super().__init__()
         self.use_original_obs = use_original_obs
         self.checkpoint_backbone = checkpoint_backbone
         self.checkpoint_lstm = checkpoint_lstm
         self.fp16 = fp16
-        self.action_split = [1, 1, 1, 1, 4, 4]
+        self.action_split = action_split
+        self.activation = activation
 
-        self.backbone = Backbone()
+        self.backbone = Backbone(activation=self.activation)
         self.backbone_norm = Normalize(in_channels=self.backbone.out_channels)
 
         self.emb_dim = self.backbone.out_channels * self.backbone.out_width ** 2
@@ -169,10 +171,16 @@ class ActorCritic(nn.Module):
         self.emb_linear = nn.Linear(self.emb_dim + self.lstm_dim, self.lstm_dim)
         self.act_vocab_size = sum(self.action_split)
         self.act_continuous_size = act_continuous_size
-        self.actor_linear = nn.Linear(self.lstm_dim,
-                                      self.act_vocab_size + 2 * self.act_continuous_size,
-                                      bias=False
-                                      )  # add more entries for continuous (2*x) for mean and std
+        self.actor_head = nn.Sequential(
+            nn.Linear(self.lstm_dim, 128),
+            Normalize(128), self.activation,
+
+            nn.Linear(128, 64),
+            Normalize(64), self.activation,
+
+            nn.Linear(64, self.act_vocab_size + 2 * self.act_continuous_size, bias=False
+                      )
+        )
         self.critic_head = nn.Sequential(
             nn.Linear(self.lstm_dim, 1, bias=False),
         )
@@ -244,13 +252,14 @@ class ActorCritic(nn.Module):
                 hx_normed = self.emb_norm(self.hx)
                 x = self.emb_linear(torch.cat([x, hx_normed], dim=-1))
             else:
-                self.hx[mask_padding], self.cx[mask_padding] = lstm_func(x, (self.hx[mask_padding], self.cx[mask_padding]))
+                self.hx[mask_padding], self.cx[mask_padding] = lstm_func(x,
+                                                                         (self.hx[mask_padding], self.cx[mask_padding]))
                 hx_normed = self.emb_norm(self.hx[mask_padding])
                 x = self.emb_linear(torch.cat([x, hx_normed], dim=-1))
 
-            x = torch.nn.functional.mish(x)
+            x = self.activation(x)
 
-            full_logits = rearrange(self.actor_linear(x), 'b a -> b 1 a')
+            full_logits = rearrange(self.actor_head(x), 'b a -> b 1 a')
             means_values = rearrange(self.critic_head(x), 'b 1 -> b 1 1')
 
             if mask_padding is not None:
@@ -271,8 +280,10 @@ class ActorCritic(nn.Module):
             mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
             mean_continuous = 5 * F.tanh(mean_continuous / 5)  # soft clamp logits to [-5, 5]
             std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
-            std_continuous = 5 * F.tanh(std_continuous / 5)  # soft clamp to [-5, 5]
-            std_continuous = F.softplus(std_continuous) - 0.0057  # [-5, 5] -> [1E-3, 5] -0.0057 = 1E-3 - softplus(-5)
+            # soft clamp to [1E-1, 5]
+            scale = (5 - 1E-1) / 2
+            shift = (5 + 1E-1) / 2
+            std_continuous = scale * F.tanh(std_continuous / scale - 0.7) + shift  # f(-0.7) = 1.07
 
             return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 
@@ -468,6 +479,226 @@ class ActorCritic(nn.Module):
             rewards=torch.cat(all_rewards, dim=1).to(device),  # (B, T)
             ends=torch.cat(all_ends, dim=1).to(device),  # (B, T)
         )
+
+
+class SeparateActorCritic(ActorCritic):
+    def __init__(self, critic: ActorCritic, critic_grad=False, **kwargs):
+        super().__init__(0, 3, **kwargs)
+        self.critic = critic
+        self.critic_grad = critic_grad
+
+    def clear(self) -> None:
+        super().clear()
+        self.critic.clear()
+
+    def reset(self, n: int, burnin_observations: Optional[torch.Tensor] = None,
+              mask_padding: Optional[torch.Tensor] = None) -> None:
+        super().reset(n, burnin_observations, mask_padding)
+        if self.critic_grad:
+            self.critic.reset(n, burnin_observations, mask_padding)
+        else:
+            with torch.no_grad():
+                self.critic.reset(n, burnin_observations, mask_padding)
+
+    def forward(self, inputs: torch.FloatTensor, mask_padding: Optional[torch.BoolTensor] = None):
+        output = super().forward(inputs, mask_padding)
+        if self.critic_grad:
+            values = self.critic.forward(inputs, mask_padding)
+        else:
+            with torch.no_grad():
+                values = self.critic.forward(inputs, mask_padding)
+        output.means_values = values.means_values
+        return output
+
+
+class ConvLSTMCell(nn.Module):
+
+    def __init__(self, input_dim, hidden_dim, kernel_size, bias=True, normalize=False):
+        """
+        Initialize ConvLSTM cell.
+
+        Parameters
+        ----------
+        input_dim: int
+            Number of channels of input tensor.
+        hidden_dim: int
+            Number of channels of hidden state.
+        kernel_size: (int, int)
+            Size of the convolutional kernel.
+        bias: bool
+            Whether or not to add the bias.
+        """
+
+        super(ConvLSTMCell, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
+        self.kernel_size = kernel_size
+        self.padding = kernel_size[0] // 2, kernel_size[1] // 2
+        self.bias = bias
+
+        self.conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
+                              out_channels=4 * self.hidden_dim,
+                              kernel_size=self.kernel_size,
+                              padding=self.padding,
+                              bias=self.bias)
+
+        self.normalize = normalize
+        self.norm = Normalize(4 * self.hidden_dim)
+
+    def forward(self, input_tensor, cur_state):
+        h_cur, c_cur = cur_state
+
+        combined = torch.cat([input_tensor, h_cur], dim=1)  # concatenate along channel axis
+
+        combined_conv = self.conv(combined)
+        if self.normalize:
+            combined_conv = self.norm(combined_conv)
+        cc_i, cc_f, cc_o, cc_g = torch.split(combined_conv, self.hidden_dim, dim=1)
+        i = torch.sigmoid(cc_i)
+        f = torch.sigmoid(cc_f)
+        o = torch.sigmoid(cc_o)
+        g = torch.tanh(cc_g)
+
+        c_next = f * c_cur + i * g
+        h_next = o * torch.tanh(c_next)
+
+        return h_next, c_next
+
+    def init_hidden(self, batch_size, image_size):
+        height, width = image_size
+        return (torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device),
+                torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
+
+
+class ConvActorCritic(ActorCritic):
+
+    def __init__(self, action_split, act_continuous_size, use_original_obs: bool = False,
+                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False, activation=nn.Mish()):
+        super(ActorCritic, self).__init__()
+        self.use_original_obs = use_original_obs
+        self.checkpoint_backbone = checkpoint_backbone
+        self.checkpoint_lstm = checkpoint_lstm
+        self.fp16 = fp16
+        self.action_split = list(action_split)
+        self.activation = activation
+
+        self.backbone = Backbone(channels=[3, 32, 64, 64, 128, 128, 128],
+                                 pools=[2, 2, 2, 2, 2, 1], activation=self.activation)  # output.shape = (B, 128, 6, 6)
+        self.backbone_norm = Normalize(in_channels=self.backbone.out_channels)
+
+        self.emb_dim = self.backbone.out_channels
+        self.lstm_dim = 64
+        self.lstm = ConvLSTMCell(self.emb_dim, self.lstm_dim, (3, 3), normalize=True)
+        self.hx, self.cx = None, None
+        self.emb_norm = Normalize(self.lstm_dim)
+
+        self.act_vocab_size = sum(self.action_split)
+        self.act_continuous_size = act_continuous_size
+        self.actor_head = nn.Sequential(
+            nn.Conv2d(self.emb_dim + self.lstm_dim, self.lstm_dim, 3),
+            Normalize(self.lstm_dim), self.activation,
+
+            nn.Conv2d(self.lstm_dim, self.lstm_dim, 3),
+            Normalize(self.lstm_dim), self.activation,
+            nn.Flatten(),
+            nn.LazyLinear(self.act_vocab_size + 2 * self.act_continuous_size, bias=False)
+        )
+        self.critic_head = nn.Sequential(
+            nn.Conv2d(self.emb_dim + self.lstm_dim, self.lstm_dim, 3),
+            Normalize(self.lstm_dim), self.activation,
+            nn.Flatten(),
+            nn.LazyLinear(1, bias=False),
+        )
+
+    def __repr__(self) -> str:
+        return "convlstm_actor_critic"
+
+    def reset(self, n: int, burnin_observations: Optional[torch.Tensor] = None,
+              mask_padding: Optional[torch.Tensor] = None) -> None:
+        device = self.backbone.blocks[0][0].weight.device
+        dtype = torch.float16 if self.fp16 else torch.float32
+        self.hx = torch.zeros(n, self.lstm_dim, 6, 6, dtype=dtype, device=device)
+        self.cx = torch.zeros(n, self.lstm_dim, 6, 6, dtype=dtype, device=device)
+        if burnin_observations is not None:
+            assert burnin_observations.ndim == 5 and burnin_observations.size(
+                0) == n and mask_padding is not None and burnin_observations.shape[:2] == mask_padding.shape
+            for i in range(burnin_observations.size(1)):
+                if mask_padding[:, i].any():
+                    with torch.no_grad():
+                        self(burnin_observations[:, i], mask_padding[:, i])
+
+    def forward(self, inputs: torch.FloatTensor, mask_padding: Optional[torch.BoolTensor] = None) -> ActorCriticOutput:
+        with torch.amp.autocast(self.device.type, enabled=self.fp16):
+            assert inputs.ndim == 4  # and inputs.shape[1:] == (3, 64, 64)
+            assert 0 <= inputs.min() <= 1 and 0 <= inputs.max() <= 1
+            assert mask_padding is None or (
+                    mask_padding.ndim == 1 and mask_padding.size(0) == inputs.size(0))
+
+            if mask_padding is not None and not mask_padding.any():
+                # noinspection PyTypeChecker
+                return ActorCriticOutput(
+                    logits_actions=torch.zeros((mask_padding.size(0), 1, self.act_vocab_size),
+                                               dtype=self.hx.dtype, device=self.device),
+                    mean_continuous=torch.zeros((mask_padding.size(0), 1, self.act_continuous_size),
+                                                dtype=self.hx.dtype, device=self.device),
+                    std_continuous=torch.ones((mask_padding.size(0), 1, self.act_continuous_size),
+                                              dtype=self.hx.dtype, device=self.device),
+                    means_values=torch.zeros((mask_padding.size(0), 1, 1),
+                                             dtype=self.hx.dtype, device=self.device)
+                )
+
+            x = inputs[mask_padding] if mask_padding is not None else inputs
+
+            x = x.mul(2).sub(1)
+            if self.checkpoint_backbone:
+                x = torch.utils.checkpoint.checkpoint(self.backbone, x, use_reentrant=False)
+            else:
+                x = self.backbone(x)
+
+            x = self.backbone_norm(x)
+            if self.checkpoint_lstm:
+                lstm_func = partial(torch.utils.checkpoint.checkpoint, self.lstm, use_reentrant=False)
+            else:
+                lstm_func = self.lstm
+            if mask_padding is None:
+                self.hx, self.cx = lstm_func(x, (self.hx, self.cx))
+                hx_normed = self.emb_norm(self.hx)
+            else:
+                self.hx[mask_padding], self.cx[mask_padding] = lstm_func(x,
+                                                                         (self.hx[mask_padding], self.cx[mask_padding]))
+                hx_normed = self.emb_norm(self.hx[mask_padding])
+
+            x = torch.cat([x, hx_normed], dim=1)
+
+            full_logits = rearrange(self.actor_head(x), 'b a -> b 1 a')
+            means_values = rearrange(self.critic_head(x), 'b 1 -> b 1 1')
+
+            if mask_padding is not None:
+                full_logits_placeholder = torch.zeros((self.hx.size(0), *full_logits.shape[1:]),
+                                                      dtype=full_logits.dtype,
+                                                      device=full_logits.device)
+                full_logits_placeholder[mask_padding] = full_logits
+                full_logits = full_logits_placeholder
+
+                means_values_placeholder = torch.zeros((self.hx.size(0), *means_values.shape[1:]),
+                                                       dtype=means_values.dtype,
+                                                       device=means_values.device)
+                means_values_placeholder[mask_padding] = means_values
+                means_values = means_values_placeholder
+
+            logits_actions = full_logits[...,
+                             :self.act_vocab_size]
+            mean_continuous = full_logits[..., self.act_vocab_size:self.act_vocab_size + self.act_continuous_size]
+            mean_continuous = 5 * F.tanh(mean_continuous / 5)  # soft clamp logits to [-5, 5]
+            std_continuous = full_logits[..., self.act_vocab_size + self.act_continuous_size:]
+            # soft clamp to [1E-1, 5]
+            scale = (5 - 1E-1) / 2
+            shift = (5 + 1E-1) / 2
+            std_continuous = scale * F.tanh(std_continuous / scale - 0.7) + shift  # f(-0.7) = 1.07
+
+            return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 
 
 if __name__ == "__main__":

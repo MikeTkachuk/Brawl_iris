@@ -521,7 +521,7 @@ class Trainer:
         self._save_checkpoint(epoch, save_agent_only, save_dataset=save_dataset, flush=flush)
         shutil.rmtree(tmp_checkpoint_dir)
 
-    def load_checkpoint(self, load_dataset=True, load_episodes=True, agent_only=False) -> None:
+    def load_checkpoint(self, load_dataset=True, load_episodes=True, agent_only=False, load_optimizer=True) -> None:
         assert self.ckpt_dir.is_dir()
         self.agent.load(self.ckpt_dir / 'last.pt', device=self.device)
         if agent_only:
@@ -529,10 +529,11 @@ class Trainer:
             return
 
         self.start_epoch = torch.load(self.ckpt_dir / 'epoch.pt') + 1
-        ckpt_opt = torch.load(self.ckpt_dir / 'optimizer.pt', map_location=self.device)
-        self.optimizer_tokenizer.load_state_dict(ckpt_opt['optimizer_tokenizer'])
-        self.optimizer_world_model.load_state_dict(ckpt_opt['optimizer_world_model'])
-        self.optimizer_actor_critic.load_state_dict(ckpt_opt['optimizer_actor_critic'])
+        if load_optimizer:
+            ckpt_opt = torch.load(self.ckpt_dir / 'optimizer.pt', map_location=self.device)
+            self.optimizer_tokenizer.load_state_dict(ckpt_opt['optimizer_tokenizer'])
+            self.optimizer_world_model.load_state_dict(ckpt_opt['optimizer_world_model'])
+            self.optimizer_actor_critic.load_state_dict(ckpt_opt['optimizer_actor_critic'])
         if load_dataset:
             self.train_dataset.load_disk_checkpoint(self.ckpt_dir / 'dataset', load_episodes=load_episodes)
         if self.cfg.evaluation.should:

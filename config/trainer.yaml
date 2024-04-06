@@ -13,13 +13,13 @@ defaults:
 env_actions: '{"num_actions": 256, "num_continuous": 3}'  # module train_cloud argparse workaround
 
 wandb:
-  mode: online
+  mode: offline
   project: iris
   entity: null
-  name: "bigger_lr_entropy"
+  name: "dataloader_dbg"
   group: null
   tags: null
-  notes: "same resume but bigger entropy loss and lr"
+  notes: "conditional entropy loss, reward > 0 if rank >= 2"
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -31,7 +31,6 @@ initialization:
 common:
   epochs: 600
   device: "cuda:0"
-  fp16: False  # when True consumes *more* memory (benchmarked)
   do_checkpoint: True
   seed: 0
   sequence_length: ${world_model.max_blocks}
@@ -49,7 +48,7 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 1e-4
+  learning_rate: 3e-5
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
@@ -68,22 +67,20 @@ training:
     start_after_epochs: 0
     batch_num_samples: 24
     grad_acc_steps: 6
-    collection_steps: 3
+    collection_steps: 2
     steps_per_epoch: 100
     imagine_horizon: ${common.sequence_length}
     lr_warmup_scale: 0.1
-    lr_warmup_steps: 30
-    adam_betas: [0.7, 0.95]
-    entropy_weight: 0.01
-    entropy_continuous_weight: 0.01
-    agc_lambda: 0.08
+    lr_warmup_steps: 5
     max_grad_norm: 3.0 # 10.0
+    agc_lambda: 0.1
+    adam_betas: [0.9, 0.99]
+    entropy_weight: 0.0001
+    entropy_continuous_weight: 0.005
     burn_in: 60
     lambda_warmup_init: False
     lambda_: 0.95
     gamma: 0.995
-    checkpoint_backbone: True
-    checkpoint_lstm: True
 
 
 evaluation:

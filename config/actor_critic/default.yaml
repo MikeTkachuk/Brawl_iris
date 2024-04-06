@@ -1,1 +1,10 @@
+_target_: src.models.actor_critic.ConvActorCritic
+action_split: [1, 1, 1, 1, 4, 4]
+act_continuous_size: 3
+activation:
+  _target_: torch.nn.LeakyReLU
+  negative_slope: 0.15
 use_original_obs: True
+checkpoint_backbone: True
+checkpoint_lstm: True
+fp16: False  # when True consumes *more* memory (benchmarked)

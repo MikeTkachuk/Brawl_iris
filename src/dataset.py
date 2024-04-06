@@ -5,9 +5,12 @@ from multiprocessing import Pool
 from pathlib import Path
 import random
 from typing import Dict, List, Optional, Tuple
+from functools import partial
 
+import numpy as np
 import psutil
 import torch
+from torch.utils.data import DataLoader, Dataset, Sampler
 from einops import rearrange
 
 from src.episode import Episode
@@ -15,8 +18,29 @@ from src.episode import Episode
 Batch = Dict[str, torch.Tensor]
 
 
-def _helper_segment(episode, start, stop, pad=True):
-    return episode.segment(start, stop, should_pad=pad)
+class _Dataset(Dataset):
+    def __init__(self, episode_ids, episode_dir):
+        super().__init__()
+        self.episode_ids = episode_ids
+        self.episode_dir = Path(episode_dir)
+
+    def len(self):
+        return len(self.episode_ids)
+
+    def __getitem__(self, idx):
+        episode_id = self.episode_ids[idx]
+        return Episode(**torch.load(self.episode_dir / f'{episode_id}.pt'))
+
+
+def _collate_fn(samples, resolution=None):
+    max_len = max(len(ep) for ep in samples)
+    sampled_episodes_segments = []
+    for sampled_episode in samples:
+        start = len(sampled_episode) - max_len
+        stop = len(sampled_episode)
+        sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
+
+    return EpisodesDataset.collate_episodes_segments(sampled_episodes_segments, resolution=resolution)
 
 
 class EpisodesDataset:
@@ -86,6 +110,31 @@ class EpisodesDataset:
         self.newly_modified_episodes.add(episode_id)
         return episode_id
 
+    def torch_dataloader(self, batch_size, epochs=100_000):
+        """Static torch version of dataset. Captures disk episodes"""
+
+        class _BatchSampler(Sampler):
+            def __init__(self, data, batch_size):
+                self.data = data
+                self.batch_size = batch_size
+
+            def __len__(self):
+                return epochs
+
+            def __iter__(self):
+                for _ in range(len(self)):
+                    yield np.random.choice(np.arange(len(self.data)), size=(self.batch_size,), replace=False).tolist()
+
+        return DataLoader(
+            _Dataset(self.disk_episodes, self._dir),
+            batch_sampler=_BatchSampler(self.disk_episodes, batch_size),
+            collate_fn=partial(_collate_fn, resolution=self.resolution),
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=False,
+            prefetch_factor=1,
+        )
+
     def sample_replay(self, batch_num_samples: int = None, weights: Optional[Tuple[float]] = None, samples=None):
         if samples is None:
             episode_pool = self.episodes if not self.lazy else self.disk_episodes
@@ -104,20 +153,17 @@ class EpisodesDataset:
 
         max_len = max(len(ep) for ep in sampled_episodes)
         sampled_episodes_segments = []
-        # TODO parallelize
-        # with Pool(1) as pool:
-        #     args = [(ep, len(ep) - max_len, len(ep)) for ep in sampled_episodes]
-        #     sampled_episodes_segments = pool.starmap(_helper_segment, args)
+
         for sampled_episode in sampled_episodes:
             start = len(sampled_episode) - max_len
             stop = len(sampled_episode)
             sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
 
-        return self._collate_episodes_segments(sampled_episodes_segments)
+        return self.collate_episodes_segments(sampled_episodes_segments)
 
     def sample_batch(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]] = None,
                      sample_from_start: bool = True) -> Batch:
-        return self._collate_episodes_segments(
+        return self.collate_episodes_segments(
             self._sample_episodes_segments(batch_num_samples, sequence_length, weights, sample_from_start))
 
     def _sample_episodes_segments(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]],
@@ -149,17 +195,19 @@ class EpisodesDataset:
             assert len(sampled_episodes_segments[-1]) == sequence_length
         return sampled_episodes_segments
 
-    def _collate_episodes_segments(self, episodes_segments: List[Episode]) -> Batch:
+    @staticmethod
+    def collate_episodes_segments(episodes_segments: List[Episode], resolution=None) -> Batch:
         episodes_segments = [e_s.__dict__ for e_s in episodes_segments]
         batch = {}
         for k in episodes_segments[0]:
             if isinstance(episodes_segments[0][k], torch.Tensor):
                 batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
-        batch['observations'] = batch['observations'].float() / 255.0  # int8 to float and scale
-        if self.resolution is not None:
+        if resolution is not None:
             to_resize = rearrange(batch['observations'], 'b t ... -> (b t) ...')
-            resized = torch.nn.functional.interpolate(to_resize, (self.resolution, self.resolution), mode='bilinear')
+            resized = torch.nn.functional.interpolate(to_resize, (resolution, resolution),
+                                                      mode='nearest')  # torch 2.1 supports uint8 bilinear
             batch['observations'] = rearrange(resized, '(b t) ... -> b t ...', b=batch['observations'].shape[0])
+        batch['observations'] = batch['observations'].float() / 255.0  # int8 to float and scale
         return batch
 
     def traverse(self, batch_num_samples: int, chunk_size: int):
@@ -172,13 +220,14 @@ class EpisodesDataset:
             batches = [chunks[i * batch_num_samples: (i + 1) * batch_num_samples] for i in
                        range(math.ceil(len(chunks) / batch_num_samples))]
             for b in batches:
-                yield self._collate_episodes_segments(b)
+                yield self.collate_episodes_segments(b)
 
     def update_disk_checkpoint(self, directory: Path, flush=True) -> None:
         assert directory.is_dir()
         self._dir = directory
         print(f'dataset.Dataset.update_disk_checkpoint: map: {self.episode_id_to_queue_idx}'
               f' n_mod: {self.newly_modified_episodes} n_del: {self.newly_deleted_episodes}')
+        torch.save(self.episode_weights, directory / "weights.pt")  # save before episodes to avoid key errors during concurrency
         num_flushed = len(self.newly_modified_episodes)
         for episode_id in self.newly_modified_episodes:
             episode = self.get_episode(episode_id)
@@ -189,7 +238,6 @@ class EpisodesDataset:
             episode_path.unlink()
             self.episode_weights.pop(episode_id)
 
-        torch.save(self.episode_weights, directory / "weights.pt")
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
 
         # flush episodes to disk

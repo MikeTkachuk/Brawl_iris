@@ -94,9 +94,14 @@ def compute_lambda_returns(rewards, values, ends, gamma, lambda_):
 
 @torch.no_grad()
 def adaptive_gradient_clipping(parameters, lam=0.15):
+    ratios = []
     for param in parameters:
+        if param.grad is None or not param.requires_grad:
+            continue
         ratio = torch.abs(param.grad) / (torch.abs(param) + 1E-3)
+        ratios.append(ratio)
         param.grad = torch.where(ratio > lam, lam * param.grad / ratio, param.grad)
+    return ratios
 
 
 class LossWithIntermediateLosses:
