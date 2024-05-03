@@ -13,13 +13,13 @@ defaults:
 env_actions: '{"num_actions": 256, "num_continuous": 3}'  # module train_cloud argparse workaround
 
 wandb:
-  mode: offline
+  mode: online
   project: iris
   entity: null
-  name: "dataloader_dbg"
+  name: "dist_quant_again"
   group: null
-  tags: null
-  notes: "conditional entropy loss, reward > 0 if rank >= 2"
+  tags: []
+  notes: "1:2 reconstruction:percept_loss, no op_flow, encoder dropout"
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -48,12 +48,13 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 3e-5
+  learning_rate: 2e-5
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
-    grad_acc_steps: 1
-    max_grad_norm: 10.0
+    grad_acc_steps: 2
+    agc_lambda: 0.1
+    max_grad_norm: 3.0
     start_after_epochs: 99999
     steps_per_epoch: 200
   world_model:
@@ -65,22 +66,24 @@ training:
     steps_per_epoch: 200
   actor_critic:
     start_after_epochs: 0
-    batch_num_samples: 24
-    grad_acc_steps: 6
-    collection_steps: 2
+    batch_num_samples: 32
+    grad_acc_steps: 2
+    collection_steps: 1
+    join_collection: False
     steps_per_epoch: 100
     imagine_horizon: ${common.sequence_length}
+    lr_heads: 0.0001  # actor head
     lr_warmup_scale: 0.1
     lr_warmup_steps: 5
     max_grad_norm: 3.0 # 10.0
-    agc_lambda: 0.1
+    agc_lambda: 0.2
     adam_betas: [0.9, 0.99]
-    entropy_weight: 0.0001
+    entropy_weight: 0.1
     entropy_continuous_weight: 0.005
-    burn_in: 60
+    burn_in: 10
     lambda_warmup_init: False
-    lambda_: 0.95
-    gamma: 0.995
+    lambda_: 0.6
+    gamma: 0.95
 
 
 evaluation:

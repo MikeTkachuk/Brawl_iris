@@ -12,6 +12,9 @@ import psutil
 import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 from einops import rearrange
+from torchvision.transforms.functional import gaussian_blur
+
+from tqdm import tqdm
 
 from src.episode import Episode
 
@@ -19,28 +22,94 @@ Batch = Dict[str, torch.Tensor]
 
 
 class _Dataset(Dataset):
-    def __init__(self, episode_ids, episode_dir):
+    def __init__(self, episode_ids, episode_dir, resolution=None):
         super().__init__()
         self.episode_ids = episode_ids
         self.episode_dir = Path(episode_dir)
 
-    def len(self):
+    def __len__(self):
         return len(self.episode_ids)
 
     def __getitem__(self, idx):
         episode_id = self.episode_ids[idx]
-        return Episode(**torch.load(self.episode_dir / f'{episode_id}.pt'))
+        return Episode(**torch.load(self.episode_dir / f'{episode_id}.pt')), episode_id
 
 
-def _collate_fn(samples, resolution=None):
-    max_len = max(len(ep) for ep in samples)
+def _tokenizer_preprocess_helper(ep_id, episode_dir, resolution, preprocessed_dir):
+    episode = Episode(**torch.load(episode_dir / f'{ep_id}.pt'))
+    observations = episode.observations / 255.0
+    observations = torch.nn.functional.interpolate(observations, (resolution, resolution),
+                                                   mode='bilinear')
+    op_flow = torch.diff(observations, dim=0).abs()
+    weights = gaussian_blur(op_flow, 5).max(dim=-3)[0]
+    weights = weights + 1 - weights.mean()
+    weights = weights ** 1.2
+    sample_paths = []
+    for i in range(1, len(episode)):
+        sample_name = f"{ep_id}_{i}.pt"
+        sample_path = preprocessed_dir / sample_name
+        sample = {"frame": observations[[i]], "weights": weights[[i - 1]]}
+        torch.save(sample, sample_path)
+        sample_paths.append(sample_path)
+    return sample_paths
+
+
+class _TokenizerDataset(Dataset):
+    def __init__(self, episode_ids, episode_dir, resolution):
+        super().__init__()
+        self.episode_ids = episode_ids
+        self.episode_dir = Path(episode_dir)
+        self.resolution = resolution
+        self._preprocess()
+
+    def _preprocess(self):
+        self.preprocessed_dir = self.episode_dir / "preprocessed"
+        self.preprocessed_dir.mkdir()
+        with Pool(8) as workers:
+            self.sample_paths = sum(
+                tqdm(workers.imap(
+                    partial(_tokenizer_preprocess_helper,
+                            episode_dir=self.episode_dir,
+                            resolution=self.resolution,
+                            preprocessed_dir=self.preprocessed_dir),
+                    self.episode_ids,
+                    chunksize=8
+                ), desc="Precomputing data: ", total=len(self.episode_ids)),
+                [])
+
+    def __len__(self):
+        return len(self.sample_paths)
+
+    def __getitem__(self, idx):
+        sample = torch.load(self.sample_paths[idx])
+        return sample["frame"], sample["weights"]
+
+
+def _collate_fn(samples, resolution=None, sample_segments=False, segment_len=None, end_proba=0.1, tokenizer=False):
+    if tokenizer:
+        segments, diffs = list(zip(*samples))
+        collated = torch.stack(segments)
+        diff = torch.stack(diffs)
+        return {"observations": collated}, diff
+
+    episodes, ids = list(zip(*samples))
+    max_len = max(len(ep) for ep in episodes)
     sampled_episodes_segments = []
-    for sampled_episode in samples:
-        start = len(sampled_episode) - max_len
-        stop = len(sampled_episode)
+    for sampled_episode in episodes:
+        if not sample_segments:
+            start = len(sampled_episode) - max_len
+            stop = len(sampled_episode)
+        else:
+            assert segment_len is not None
+            if random.random() > end_proba:
+                stop = random.randint(min(segment_len, len(sampled_episode)), len(sampled_episode))
+            else:
+                stop = len(sampled_episode)
+            start = stop - segment_len
         sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
 
-    return EpisodesDataset.collate_episodes_segments(sampled_episodes_segments, resolution=resolution)
+    collated = EpisodesDataset.collate_episodes_segments(sampled_episodes_segments, resolution=resolution)
+    return collated, ids
 
 
 class EpisodesDataset:

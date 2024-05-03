@@ -107,7 +107,15 @@ def adaptive_gradient_clipping(parameters, lam=0.15):
 class LossWithIntermediateLosses:
     def __init__(self, **kwargs):
         self.loss_total = sum(kwargs.values())
-        self.intermediate_losses = {k: v.item() for k, v in kwargs.items()}
+        self._kwargs = kwargs
+        self._intermediate_losses = None
+
+    @property
+    def intermediate_losses(self):  # avoids gpu sync
+        if self._intermediate_losses is None:
+            self._intermediate_losses = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in self._kwargs.items()}
+
+        return self._intermediate_losses
 
     def __truediv__(self, value):
         for k, v in self.intermediate_losses.items():
