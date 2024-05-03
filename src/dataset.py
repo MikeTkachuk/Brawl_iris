@@ -179,29 +179,51 @@ class EpisodesDataset:
         self.newly_modified_episodes.add(episode_id)
         return episode_id
 
-    def torch_dataloader(self, batch_size, epochs=100_000):
-        """Static torch version of dataset. Captures disk episodes"""
+    def torch_dataloader(self, batch_size,
+                         epochs=100_000,
+                         random_sampling=True,
+                         parallelize=True,
+                         num_workers=2,
+                         prefetch_factor=1,
+                         sample_segments=False,
+                         segment_len=None,
+                         pin_memory=False,
+                         tokenizer=False):
+        """Static torch version of dataset. Captures disk episodes
+        :param tokenizer: if true, segment_len will be set to 2, optical flow mask will be produced
+        """
 
         class _BatchSampler(Sampler):
-            def __init__(self, data, batch_size):
+            def __init__(self, data, batch_size, random_sampling=True, shuffle=True):
                 self.data = data
                 self.batch_size = batch_size
+                self.random_sampling = random_sampling
+                self.shuffle = shuffle
 
             def __len__(self):
-                return epochs
+                return epochs if self.random_sampling else int(np.ceil(len(self.data) / self.batch_size))
 
             def __iter__(self):
-                for _ in range(len(self)):
-                    yield np.random.choice(np.arange(len(self.data)), size=(self.batch_size,), replace=False).tolist()
+                pool = np.arange(len(self.data))
+                if self.random_sampling:
+                    for _ in range(len(self)):
+                        yield np.random.choice(pool, size=(self.batch_size,), replace=False).tolist()
+                else:
+                    if self.shuffle:
+                        pool = np.random.permutation(pool)
+                    for i in range(len(self)):
+                        yield pool[i * self.batch_size: (i + 1) * self.batch_size]
 
+        dataset = (_TokenizerDataset if tokenizer else _Dataset)(self.disk_episodes, self._dir, self.resolution)
         return DataLoader(
-            _Dataset(self.disk_episodes, self._dir),
-            batch_sampler=_BatchSampler(self.disk_episodes, batch_size),
-            collate_fn=partial(_collate_fn, resolution=self.resolution),
-            num_workers=4,
-            persistent_workers=True,
-            pin_memory=False,
-            prefetch_factor=1,
+            dataset,
+            batch_sampler=_BatchSampler(dataset, batch_size, random_sampling=random_sampling, shuffle=True),
+            collate_fn=partial(_collate_fn, resolution=self.resolution,
+                               sample_segments=sample_segments, segment_len=segment_len, tokenizer=tokenizer),
+            num_workers=num_workers if parallelize else 0,
+            persistent_workers=True if parallelize else False,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor if parallelize else 2,  # should be 2 if not used (weird pytorch check)
         )
 
     def sample_replay(self, batch_num_samples: int = None, weights: Optional[Tuple[float]] = None, samples=None):
@@ -228,12 +250,13 @@ class EpisodesDataset:
             stop = len(sampled_episode)
             sampled_episodes_segments.append(sampled_episode.segment(start, stop, should_pad=True))
 
-        return self.collate_episodes_segments(sampled_episodes_segments)
+        return self.collate_episodes_segments(sampled_episodes_segments, self.resolution)
 
     def sample_batch(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]] = None,
                      sample_from_start: bool = True) -> Batch:
         return self.collate_episodes_segments(
-            self._sample_episodes_segments(batch_num_samples, sequence_length, weights, sample_from_start))
+            self._sample_episodes_segments(batch_num_samples, sequence_length, weights, sample_from_start),
+            self.resolution)
 
     def _sample_episodes_segments(self, batch_num_samples: int, sequence_length: int, weights: Optional[Tuple[float]],
                                   sample_from_start: bool) -> List[Episode]:
@@ -271,7 +294,7 @@ class EpisodesDataset:
         for k in episodes_segments[0]:
             if isinstance(episodes_segments[0][k], torch.Tensor):
                 batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
-        if resolution is not None:
+        if resolution is not None and not torch.all(batch["observations"].shape[-2:] == resolution):
             to_resize = rearrange(batch['observations'], 'b t ... -> (b t) ...')
             resized = torch.nn.functional.interpolate(to_resize, (resolution, resolution),
                                                       mode='nearest')  # torch 2.1 supports uint8 bilinear
@@ -289,14 +312,15 @@ class EpisodesDataset:
             batches = [chunks[i * batch_num_samples: (i + 1) * batch_num_samples] for i in
                        range(math.ceil(len(chunks) / batch_num_samples))]
             for b in batches:
-                yield self.collate_episodes_segments(b)
+                yield self.collate_episodes_segments(b, self.resolution)
 
     def update_disk_checkpoint(self, directory: Path, flush=True) -> None:
         assert directory.is_dir()
         self._dir = directory
         print(f'dataset.Dataset.update_disk_checkpoint: map: {self.episode_id_to_queue_idx}'
               f' n_mod: {self.newly_modified_episodes} n_del: {self.newly_deleted_episodes}')
-        torch.save(self.episode_weights, directory / "weights.pt")  # save before episodes to avoid key errors during concurrency
+        torch.save(self.episode_weights,
+                   directory / "weights.pt")  # save before episodes to avoid key errors during concurrency
         num_flushed = len(self.newly_modified_episodes)
         for episode_id in self.newly_modified_episodes:
             episode = self.get_episode(episode_id)
