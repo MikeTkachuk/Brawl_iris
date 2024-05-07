@@ -55,7 +55,7 @@ class WorldModelEnv:
         return outputs_wm.output_sequence  # (B, K, E)
 
     @torch.no_grad()
-    def step(self, action: Union[int, np.ndarray, torch.LongTensor], continuous=None, should_predict_next_obs: bool = True) -> None:
+    def step(self, action: Union[int, np.ndarray, torch.LongTensor], continuous=None, should_predict_next_obs: bool = True):
 
         assert self.keys_values_wm is not None and self.num_observations_tokens is not None
 

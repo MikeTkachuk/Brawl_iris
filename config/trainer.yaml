@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "dist_quant_again"
+  name: "world_model"
   group: null
   tags: []
   notes: "1:2 reconstruction:percept_loss, no op_flow, encoder dropout"
