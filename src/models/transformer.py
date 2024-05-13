@@ -28,6 +28,9 @@ class TransformerConfig:
     resid_pdrop: float
     attn_pdrop: float
 
+    n_last_frames_drop: int = 0
+    last_frames_pdrop: float = 0.0
+
     @property
     def max_tokens(self):
         return self.tokens_per_block * self.max_blocks
@@ -75,6 +78,22 @@ class Block(nn.Module):
         return x
 
 
+class MaskedDropout(nn.Module):
+    def __init__(self, p=0.1):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x, mask):
+        if self.training:
+            loc_pool = torch.nonzero(mask)
+            loc_samples = loc_pool[torch.rand(loc_pool.size(0)) < self.p]
+            x[..., loc_samples[:, 0], loc_samples[:, 1]] = 0
+            frac_affected = loc_pool.size(1) / mask.numel()
+            x /= 1 - self.p * frac_affected
+
+        return x
+
+
 class SelfAttention(nn.Module):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
@@ -84,13 +103,26 @@ class SelfAttention(nn.Module):
         self.key = nn.Linear(config.embed_dim, config.embed_dim)
         self.query = nn.Linear(config.embed_dim, config.embed_dim)
         self.value = nn.Linear(config.embed_dim, config.embed_dim)
-        self.attn_drop = nn.Dropout(config.attn_pdrop)
+        self.attn_drop = nn.Dropout(config.attn_pdrop, inplace=False)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
         self.proj = nn.Linear(config.embed_dim, config.embed_dim)
 
         causal_mask = torch.tril(torch.ones(config.max_tokens, config.max_tokens))
-        block_causal_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
+        block_causal_mask = torch.max(causal_mask, torch.block_diag(
+            *[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
         self.register_buffer('mask', causal_mask if config.attention == 'causal' else block_causal_mask)
+        # todo: integrate into config
+        # drop obvious previous frames, leave actions
+        self.precise_attn_drop = MaskedDropout(config.last_frames_pdrop)
+        precise_drop_mask = torch.zeros(config.max_tokens, config.max_tokens)
+        for i in range(1, config.max_tokens):  # shift by 1 up to reflect next token prediction
+            full_blocks = i // config.tokens_per_block
+            for k in range(1, config.n_last_frames_drop + 1):
+                if full_blocks > k:
+                    precise_drop_mask[i - 1,
+                    (full_blocks - k) * config.tokens_per_block:(full_blocks - k + 1) * config.tokens_per_block - 1] = 1
+
+        self.register_buffer("precise_attn_drop_mask", precise_drop_mask.bool())
 
     def forward(self, x: torch.Tensor, kv_cache: Optional[KVCache] = None) -> torch.Tensor:
         B, T, C = x.size()
@@ -100,9 +132,9 @@ class SelfAttention(nn.Module):
         else:
             L = 0
 
-        q = self.query(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)   # (B, nh, T, hs)
-        k = self.key(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)     # (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)   # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
+        k = self.key(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)  # (B, nh, T, hs)
 
         if kv_cache is not None:
             kv_cache.update(k, v)
@@ -112,6 +144,8 @@ class SelfAttention(nn.Module):
         att = att.masked_fill(self.mask[L:L + T, :L + T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
+        att = self.precise_attn_drop(att, self.precise_attn_drop_mask[L:L + T, :L + T])
+        att /= att.sum(-1, keepdims=True).detach() + 1E-4
         y = att @ v
         y = rearrange(y, 'b h t e -> b t (h e)')
 

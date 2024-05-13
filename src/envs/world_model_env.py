@@ -24,6 +24,8 @@ class WorldModelEnv:
 
         self.env = env
 
+        self.temperature = 1.0
+
     @property
     def num_observations_tokens(self) -> int:
         return self._num_observations_tokens
@@ -55,16 +57,26 @@ class WorldModelEnv:
         return outputs_wm.output_sequence  # (B, K, E)
 
     @torch.no_grad()
-    def step(self, action: Union[int, np.ndarray, torch.LongTensor], continuous=None, should_predict_next_obs: bool = True):
-
+    def step(self, action: Union[int, np.ndarray, torch.LongTensor],
+             continuous=None,
+             should_predict_next_obs: bool = True,
+             context_shift=False):
+        if isinstance(context_shift, bool):
+            max_context = self.world_model.config.max_tokens
+        else:
+            assert isinstance(context_shift, int) and context_shift > 0
+            max_context = context_shift * self.world_model.config.tokens_per_block
         assert self.keys_values_wm is not None and self.num_observations_tokens is not None
 
         num_passes = 1 + self.num_observations_tokens if should_predict_next_obs else 1
 
         output_sequence, obs_tokens = [], []
 
-        if self.keys_values_wm.size + num_passes > self.world_model.config.max_tokens:
-            _ = self.refresh_keys_values_with_initial_obs_tokens(self.obs_tokens)
+        if self.keys_values_wm.size + num_passes > max_context:
+            if context_shift:
+                self.keys_values_wm.prune_context(np.arange(self.keys_values_wm.size) >= self.world_model.config.tokens_per_block)
+            else:
+                _ = self.refresh_keys_values_with_initial_obs_tokens(self.obs_tokens)
 
         token = action.clone().detach() if isinstance(action, torch.Tensor) else torch.tensor(action, dtype=torch.long)
         token = token.reshape(-1, 1).to(self.device)  # (B, 1)
@@ -79,11 +91,11 @@ class WorldModelEnv:
             output_sequence.append(outputs_wm.output_sequence)
 
             if k == 0:
-                reward = Categorical(logits=outputs_wm.logits_rewards).sample().float().cpu().numpy().reshape(-1) - 1   # (B,)
-                done = Categorical(logits=outputs_wm.logits_ends).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
+                reward = Categorical(logits=outputs_wm.logits_rewards/self.temperature).sample().float().cpu().numpy().reshape(-1) - 1   # (B,)
+                done = Categorical(logits=outputs_wm.logits_ends/self.temperature).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
 
             if k < self.num_observations_tokens:
-                token = Categorical(logits=outputs_wm.logits_observations).sample()
+                token = Categorical(logits=outputs_wm.logits_observations/self.temperature).sample()
                 obs_tokens.append(token)
 
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)

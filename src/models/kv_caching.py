@@ -25,6 +25,14 @@ class Cache:
         self._cache = self._cache[mask]
         self._n = self._cache.shape[0]
 
+    def prune_context(self, mask: np.ndarray):
+        assert mask.ndim == 1 and mask.shape[0] == self.shape[2]
+        mask = torch.arange(self._size)[mask]
+        new_context = self._cache[:, :, mask]
+        self._cache = self._reset(self._n)
+        self._size = new_context.size(2)
+        self._cache[:, :, :self._size] = new_context
+
     def get(self) -> torch.Tensor:
         return self._cache[:, :, :self._size, :]
 
@@ -51,6 +59,10 @@ class KVCache:
     def prune(self, mask: np.ndarray) -> None:
         self._k_cache.prune(mask)
         self._v_cache.prune(mask)
+
+    def prune_context(self, mask: np.ndarray):
+        self._k_cache.prune_context(mask)
+        self._v_cache.prune_context(mask)
 
     def get(self) -> Tuple[torch.Tensor, torch.Tensor]:
         return self._k_cache.get(), self._v_cache.get()
@@ -81,6 +93,10 @@ class KeysValues:
     def prune(self, mask: np.ndarray) -> None:
         for kv_cache in self._keys_values:
             kv_cache.prune(mask)
+
+    def prune_context(self, mask: np.ndarray):
+        for kv_cache in self._keys_values:
+            kv_cache.prune_context(mask)
 
 
 class AssignWithoutInplaceCheck(torch.autograd.Function):

@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 import time
 
-sys.path.append(str(Path(__file__).parents[2]))
+SOURCE_ROOT = str(Path(__file__).absolute().parents[2])
+sys.path.append(SOURCE_ROOT)
 
 import hydra
 import wandb
@@ -15,42 +16,21 @@ import torch
 import torch.backends
 from omegaconf import OmegaConf
 from tqdm import tqdm
+from sklearn.model_selection import train_test_split
 
 from src.dataset import EpisodesDataset
-from src.utils import set_seed, adaptive_gradient_clipping
+from src.utils import set_seed, adaptive_gradient_clipping, ActionTokenizer
 from src.models.tokenizer.tokenizer import Tokenizer
 from src.models.world_model import WorldModel
 
 device = "cuda"
 
 
-def create_token(inp, n_binary=4, anchors=(4, 4)):
-    """
-    :param inp: Warning: does not accept torch tensors.
-     array-like that holds [make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor]
-    """
-    assert len(inp) == n_binary + len(anchors)
-    bin_str = ''
-    for i in range(n_binary):
-        bin_str += str(int(inp[i]))
-
-    full_size = len(bin(anchors[0] - 1)) - 2
-    anch_bin = bin(inp[-2])[2:]
-    bin_str += '0' * (full_size - len(anch_bin)) + anch_bin
-
-    full_size = len(bin(anchors[1] - 1)) - 2
-    anch_bin = bin(inp[-1])[2:]
-    bin_str += '0' * (full_size - len(anch_bin)) + anch_bin
-
-    assert len(bin_str) == len(bin(2 ** n_binary * anchors[0] * anchors[1])) - 3, "Incorrect token range"
-    return int(bin_str, 2)
-
-
 @torch.no_grad()
 def generate_token_dataset():
     with hydra.initialize(config_path="../../config"):
         cfg = hydra.compose(config_name="trainer")
-
+    action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
     tokenizer: Tokenizer = instantiate(cfg.tokenizer)
     tokenizer.load_state_dict(
         torch.load(r"input_artifacts\tokenizer.pt")
@@ -72,7 +52,7 @@ def generate_token_dataset():
                                       should_preprocess=True).tokens
             all_tokens.append(tokens)
         tokens = torch.cat(all_tokens, dim=1)[0]
-        action_tokens = [create_token(a.cpu().numpy(), anchors=cfg.env.train.move_shot_anchors) for a in
+        action_tokens = [action_tokenizer.create_action_token(*a.cpu().numpy()) for a in
                          episode.actions]
         token_dataset[ep_id] = {
             "tokens": tokens,
@@ -126,6 +106,7 @@ def custom_setup(cfg):
     set_seed(cfg.common.seed)
     if sys.gettrace() is not None:  # if debugging
         cfg.wandb.mode = "offline"
+        cfg.training.world_model.batch_num_samples = 2
 
     cfg.wandb.tags = list(set(cfg.wandb.tags or [] + ["world_model"]))
     wandb.init(config=OmegaConf.to_container(cfg, resolve=True),
@@ -140,31 +121,60 @@ def main(cfg):
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
         tokenizer: Tokenizer = instantiate(cfg.tokenizer)
-        world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=256,
+        action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
+        world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=action_tokenizer.n_actions,
                                  act_continuous_size=3,
                                  config=instantiate(cfg.world_model)).to(device).train()
         optimizer = torch.optim.Adam(world_model.parameters(),
                                      lr=cfg.training.learning_rate)
-        dataset = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\token_dataset.pt")
+
+        # load checkpoint
+        # world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt", map_location=device))
+        # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\optimizer.pt", map_location=device))
+
+        dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset.pt")
         custom_setup(cfg)
-        dataloader = get_dataloader(dataset, batch_size=cfg.training.world_model.batch_num_samples,
+        train_keys, eval_keys = train_test_split(list(dataset.keys()), test_size=0.15)
+        train_dataset = {k: dataset[k] for k in train_keys}
+        dataloader = get_dataloader(train_dataset, batch_size=cfg.training.world_model.batch_num_samples,
                                     segment_len=cfg.common.sequence_length)
+        eval_dataset = {k: dataset[k] for k in eval_keys}
         for n_step in tqdm(range(100_000), desc="Steps: "):
             batch = next(dataloader)
             batch = {k: v.to(device) for k, v in batch.items()}
             loss = world_model.compute_loss(batch, None)
             loss.loss_total.backward()
             if (n_step + 1) % cfg.training.world_model.grad_acc_steps == 0:
+                adaptive_gradient_clipping(world_model.parameters(), lam=cfg.training.world_model.agc_lambda)
                 optimizer.step()
                 for p in world_model.parameters():
                     p.grad = None
 
                 to_log = {}
                 to_log.update(loss.intermediate_losses)
+                to_log = {f"train/{k}": v for k, v in to_log.items()}
                 wandb.log(to_log)
-            if (n_step + 1) % 50 == 0:
+
+            if (n_step + 1) % 500 == 0:
+                eval_dataloader = get_dataloader(eval_dataset, batch_size=cfg.training.world_model.batch_num_samples,
+                                                 segment_len=cfg.common.sequence_length, steps_per_epoch=50)
+                world_model.eval()
+                eval_metrics = []
+                with torch.no_grad():
+                    for batch in eval_dataloader:
+                        batch = {k: v.to(device) for k, v in batch.items()}
+                        eval_metrics.append(world_model.compute_loss(batch, None).intermediate_losses)
+                avg_eval_metrics = {f"eval/{k}": sum([m[k] for m in eval_metrics]) / len(eval_metrics) for k in eval_metrics[0]}
+                wandb.log(avg_eval_metrics)
+                world_model.train()
+
+            if (n_step + 1) % 100 == 0:
                 torch.save(world_model.state_dict(), "checkpoints/last.pt")
                 torch.save(optimizer.state_dict(), "checkpoints/optimizer.pt")
+            if (n_step + 1) % 1000 == 0:
+                Path(f"checkpoints{n_step // 1000}").mkdir()
+                torch.save(world_model.state_dict(), f"checkpoints{n_step // 1000}/last.pt")
+                torch.save(optimizer.state_dict(), f"checkpoints{n_step // 1000}/optimizer.pt")
 
     finally:
         shutil.rmtree(r"checkpoints/dataset")
@@ -178,9 +188,9 @@ def main_ac_head(cfg):
 
 
 @torch.no_grad()
-def explore_world_model():
+def explore_world_model(checkpoint_path=None, max_context=None):
     from src.envs.world_model_env import WorldModelEnv
-    wm_checkpoint_path = Path(
+    wm_checkpoint_path = checkpoint_path or Path(
         r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt")
 
     with hydra.initialize(config_path="../../config"):
@@ -191,19 +201,21 @@ def explore_world_model():
         torch.load(r"input_artifacts\tokenizer.pt")
     )
     tokenizer.to(device).eval()
-    world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=256,
+    action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
+    world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=action_tokenizer.n_actions,
                              act_continuous_size=3,
                              config=instantiate(cfg.world_model)).to(device).eval()
-    world_model.load_state_dict(torch.load(wm_checkpoint_path, map_location=device))
+    world_model.load_state_dict(torch.load(wm_checkpoint_path, map_location=device), strict=False)
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
 
     wm_env = WorldModelEnv(tokenizer, world_model, device)
+    action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
 
     def env_reset(ep_id=None, frame_id=None):
         ep_id = ep_id or random.randint(0, len(dataset))
         episode = dataset.get_episode(ep_id)
-        frame_id = frame_id or random.randint(0, len(episode)-1)
+        frame_id = frame_id or random.randint(0, len(episode) - 1)
         observation = episode.observations[[frame_id]]
         observation = observation / 255.0
         observation = torch.nn.functional.interpolate(observation, (dataset.resolution, dataset.resolution),
@@ -213,8 +225,13 @@ def explore_world_model():
 
     def env_step(make_move, make_shot, super_ability, use_gadget,
                  move_anchor, shot_anchor, move_shift=0, shot_shift=0, shot_strength=-10):
-        token = create_token([make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor])
-        return wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength])
+        token = action_tokenizer.create_action_token(
+            make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor
+        )
+        tok_b = wm_env.obs_tokens.reshape(8, 8)
+        out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=max_context or True)
+        print(wm_env.obs_tokens.reshape(8, 8) - tok_b)
+        return out
 
     ###
     # UI
@@ -226,6 +243,12 @@ def explore_world_model():
     import numpy as np
 
     IMG_SIZE = 350
+
+    class Counter:
+        pass
+
+    counter = Counter()
+    counter.value = 0
 
     def my_grid_func(obj, row, col, **kwargs):
         obj.grid_configure(row=row, column=col, **kwargs)
@@ -255,7 +278,12 @@ def explore_world_model():
     def after_step(*args):
         obs, reward, done = args[:3]
         update_image(obs)
-        info_var.set(f"Reward: {reward.item()}. Done: {done.item()}")
+        counter.value += 1
+        info_var.set(f"Reward: {reward.item()}. Done: {done.item()}. Step: {counter.value}")
+
+    def after_reset(*args):
+        counter.value = 0
+        update_image(*args)
 
     info_frame = tk.Frame(left_frame, name="info_frame")
     info_frame.grid(1, 0)
@@ -265,10 +293,13 @@ def explore_world_model():
 
     controls_frame = tk.Frame(left_frame, name="controls_frame")
     controls_frame.grid(2, 0)
-    reset_button = ttk.Button(controls_frame, text="Reset", command=lambda: update_image(env_reset()))
-    reset_button.grid(0, 0)
+    tk.Label(controls_frame, text="Temperature ").grid(0, 0)
+    temperature_var = tk.StringVar(value="1.0")
+    ttk.Entry(controls_frame, textvariable=temperature_var).grid(0, 1)
+    reset_button = ttk.Button(controls_frame, text="Reset", command=lambda: after_reset(*env_reset()))
+    reset_button.grid(1, 0)
     step_button = ttk.Button(controls_frame, text="Step", command=lambda: after_step(*env_step(**gather_actions())))
-    step_button.grid(0, 1)
+    step_button.grid(1, 1)
 
     # action input
     right_frame = tk.Frame(window, name="right_frame")
@@ -296,12 +327,28 @@ def explore_world_model():
         ch_values = {k: v.get() for k, v in checkboxes.items()}
         r_values = {k: v.get() for k, v in radiobuttons.items()}
         ch_values.update(r_values)
+        wm_env.temperature = float(temperature_var.get())
         return ch_values
+
+    reset_button.invoke()
+    window.bind("<Return>", lambda x: step_button.invoke())
+    window.bind("<Escape>", lambda x: reset_button.invoke())
     window.mainloop()
 
 
 if __name__ == "__main__":
-    # todo: action tokenization - collapse make move into anchor.
-    #  env_parse, create_token, regenerate dataset, retrain wm
     # todo: add eval to tokenizer and wm (add more episodes)
-    explore_world_model()
+    # todo: collect true random behaviour with fixed movement token (20% time standing)
+    # todo: 0.5s frame too easy, wm collapses into copying previous frame. Train on 2 action gap (attention mask)
+    # ep = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\dataset\43.pt")
+    # observations = ep["observations"]
+    # import matplotlib.pyplot as plt
+    # for i in range(1, len(ep["ends"])):
+    #     img = torch.cat([observations[i-1], observations[i]], dim=-1).permute(1,2,0).numpy()
+    #     plt.imshow(img)
+    #     plt.title(ep["actions"][i-1])
+    #     plt.show()
+    # main()
+    explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\vastai_wm_nolastobs.pt",
+                        max_context=None)
+    # generate_token_dataset()
