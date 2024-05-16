@@ -153,11 +153,12 @@ def main(cfg):
                 to_log = {}
                 to_log.update(loss.intermediate_losses)
                 to_log = {f"train/{k}": v for k, v in to_log.items()}
-                wandb.log(to_log)
+                if (n_step + 1) % (cfg.training.world_model.grad_acc_steps*4) == 0:
+                    wandb.log(to_log)
 
-            if (n_step + 1) % 500 == 0:
+            if n_step % 500 == 0:
                 eval_dataloader = get_dataloader(eval_dataset, batch_size=cfg.training.world_model.batch_num_samples,
-                                                 segment_len=cfg.common.sequence_length, steps_per_epoch=50)
+                                                 segment_len=cfg.common.sequence_length, steps_per_epoch=100)
                 world_model.eval()
                 eval_metrics = []
                 with torch.no_grad():
@@ -348,7 +349,7 @@ if __name__ == "__main__":
     #     plt.imshow(img)
     #     plt.title(ep["actions"][i-1])
     #     plt.show()
-    # main()
-    explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\vastai_wm_nolastobs.pt",
-                        max_context=None)
+    main()
+    # explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\vastai_wm_nolastobs.pt",
+    #                     max_context=None)
     # generate_token_dataset()

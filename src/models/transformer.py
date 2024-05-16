@@ -79,14 +79,17 @@ class Block(nn.Module):
 
 
 class MaskedDropout(nn.Module):
-    def __init__(self, p=0.1):
+    def __init__(self, p=0.1, inplace=True):
         super().__init__()
         self.p = p
+        self.inplace = inplace
 
     def forward(self, x, mask):
         if self.training:
             loc_pool = torch.nonzero(mask)
             loc_samples = loc_pool[torch.rand(loc_pool.size(0)) < self.p]
+            if not self.inplace:
+                x = x.clone()
             x[..., loc_samples[:, 0], loc_samples[:, 1]] = 0
             frac_affected = loc_pool.size(1) / mask.numel()
             x /= 1 - self.p * frac_affected
@@ -111,9 +114,8 @@ class SelfAttention(nn.Module):
         block_causal_mask = torch.max(causal_mask, torch.block_diag(
             *[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
         self.register_buffer('mask', causal_mask if config.attention == 'causal' else block_causal_mask)
-        # todo: integrate into config
         # drop obvious previous frames, leave actions
-        self.precise_attn_drop = MaskedDropout(config.last_frames_pdrop)
+        self.precise_attn_drop = MaskedDropout(config.last_frames_pdrop, inplace=False)
         precise_drop_mask = torch.zeros(config.max_tokens, config.max_tokens)
         for i in range(1, config.max_tokens):  # shift by 1 up to reflect next token prediction
             full_blocks = i // config.tokens_per_block
@@ -141,11 +143,11 @@ class SelfAttention(nn.Module):
             k, v = kv_cache.get()
 
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.mask[L:L + T, :L + T] == 0, float('-inf'))
+        context_mask = self.mask[L:L + T, :L + T]
+        context_mask = self.precise_attn_drop(context_mask, self.precise_attn_drop_mask[L:L + T, :L + T])
+        att = att.masked_fill(context_mask == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        att = self.precise_attn_drop(att, self.precise_attn_drop_mask[L:L + T, :L + T])
-        att /= att.sum(-1, keepdims=True).detach() + 1E-4
         y = att @ v
         y = rearrange(y, 'b h t e -> b t (h e)')
 
