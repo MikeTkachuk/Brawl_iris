@@ -1,7 +1,7 @@
 import os
 from collections import deque
 import math
-from multiprocessing import Pool
+from multiprocessing import Pool, set_start_method
 from pathlib import Path
 import random
 from typing import Dict, List, Optional, Tuple
@@ -17,6 +17,8 @@ from torchvision.transforms.functional import gaussian_blur
 from tqdm import tqdm
 
 from src.episode import Episode
+
+set_start_method("spawn")
 
 Batch = Dict[str, torch.Tensor]
 
@@ -55,26 +57,38 @@ def _tokenizer_preprocess_helper(ep_id, episode_dir, resolution, preprocessed_di
 
 
 class _TokenizerDataset(Dataset):
-    def __init__(self, episode_ids, episode_dir, resolution):
+    def __init__(self, episode_ids, episode_dir, resolution, split=None):
         super().__init__()
         self.episode_ids = episode_ids
         self.episode_dir = Path(episode_dir)
         self.resolution = resolution
+        self.split = split
         self._preprocess()
 
     def _preprocess(self):
         self.preprocessed_dir = self.episode_dir / "preprocessed"
-        self.preprocessed_dir.mkdir()
+        if self.preprocessed_dir.exists():
+            episode_pool = set(self.episode_ids)
+            self.sample_paths = [p for p in self.preprocessed_dir.glob("*") if
+                                 int(p.stem.split("_")[0]) in episode_pool]
+            ep_diff = list(episode_pool.difference([int(p.stem.split("_")[0]) for p in self.sample_paths]))
+            if not ep_diff:
+                return
+        else:
+            ep_diff = self.episode_ids
+            self.preprocessed_dir.mkdir()
+
         with Pool(8) as workers:
+            print(f"created pool for preproc. Current pid: {os.getpid()}")
             self.sample_paths = sum(
                 tqdm(workers.imap(
                     partial(_tokenizer_preprocess_helper,
                             episode_dir=self.episode_dir,
                             resolution=self.resolution,
                             preprocessed_dir=self.preprocessed_dir),
-                    self.episode_ids,
+                    ep_diff,
                     chunksize=8
-                ), desc="Precomputing data: ", total=len(self.episode_ids)),
+                ), desc="Precomputing data: ", total=len(ep_diff)),
                 [])
 
     def __len__(self):
@@ -341,7 +355,7 @@ class EpisodesDataset:
     def load_disk_checkpoint(self, directory: Path, load_episodes=True) -> None:
         assert directory.is_dir()
         assert not self.episodes or self.lazy, "Repetitive loading"
-        episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem not in ["weights"]])
+        episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem.isnumeric()])
 
         if not len(episode_ids):
             self.disk_episodes = deque()

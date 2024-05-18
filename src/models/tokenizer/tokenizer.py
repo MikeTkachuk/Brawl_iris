@@ -27,7 +27,7 @@ class TokenizerEncoderOutput:
 
 class Tokenizer(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, encoder: Encoder, decoder: Decoder,
-                 with_lpips: bool = True) -> None:
+                 with_lpips: bool = True, loss_weights=(1.0, 1.0, 1.0)) -> None:
         super().__init__()
         self.vocab_size = vocab_size
         self.encoder = encoder
@@ -39,6 +39,7 @@ class Tokenizer(nn.Module):
         self.decoder = decoder
         self.embedding.weight.data.uniform_(-1.0 / vocab_size, 1.0 / vocab_size)
         self.lpips = LPIPS().eval() if with_lpips else None
+        self.loss_weights = loss_weights
 
     def __repr__(self) -> str:
         return "tokenizer"
@@ -72,9 +73,9 @@ class Tokenizer(nn.Module):
             reconstruction_loss = torch.square(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
 
-        return LossWithIntermediateLosses(commitment_loss=0.1*commitment_loss,
-                                          reconstruction_loss=0.5*reconstruction_loss,
-                                          perceptual_loss=perceptual_loss)
+        return LossWithIntermediateLosses(commitment_loss=self.loss_weights[0]*commitment_loss,
+                                          reconstruction_loss=self.loss_weights[0]*reconstruction_loss,
+                                          perceptual_loss=self.loss_weights[0]*perceptual_loss)
 
     def encode(self, x: torch.Tensor, should_preprocess: bool = False) -> TokenizerEncoderOutput:
         if should_preprocess:

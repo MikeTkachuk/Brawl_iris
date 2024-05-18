@@ -16,10 +16,10 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "dist_quant_again"
+  name: "new_data_tok"
   group: null
   tags: []
-  notes: "1:2 reconstruction:percept_loss, no op_flow, encoder dropout"
+  notes: ""
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -48,10 +48,10 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 2e-5
+  learning_rate: 1e-4
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
-    batch_num_samples: 8 # max 24 # old 256
+    batch_num_samples: 24 # 24 rtx *090
     grad_acc_steps: 2
     agc_lambda: 0.1
     max_grad_norm: 3.0

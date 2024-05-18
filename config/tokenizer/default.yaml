@@ -1,7 +1,8 @@
 _target_: src.models.tokenizer.Tokenizer
 
-vocab_size: 1024
+vocab_size: 512
 embed_dim: 512
+loss_weights: [0.1, 0.3, 1.0]
 encoder:
   _target_: src.models.tokenizer.Encoder
   config:
