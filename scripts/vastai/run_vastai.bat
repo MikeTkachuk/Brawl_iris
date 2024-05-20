@@ -14,9 +14,9 @@ aws s3 cp %%x s3://vastai-output/input/ --profile tmg
 :: input artifacts
 set dataset_path=input_artifacts\dataset.zip
 
-for %%x in (%dataset_path%) do (
-aws s3 cp %%x s3://vastai-output/input/input_artifacts/ --profile tmg
-)
+@REM for %%x in (%dataset_path%) do (
+@REM aws s3 cp %%x s3://vastai-output/input/input_artifacts/ --profile tmg
+@REM )
 
 :: exit /b
 timeout /t 5

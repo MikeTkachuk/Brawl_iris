@@ -11,12 +11,14 @@ sys.path.append(SOURCE_ROOT)
 import hydra
 import wandb
 from hydra.utils import instantiate
-
 import torch
 import torch.backends
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+
+plt.switch_backend("AGG")
 
 from src.dataset import EpisodesDataset
 from src.utils import set_seed, adaptive_gradient_clipping
@@ -39,6 +41,7 @@ def custom_setup(cfg):
 
 @hydra.main(config_path="../../config", config_name="trainer")
 def main(cfg):
+    # todo: increase loss contrast (abs(l)^3 / 3 loss)
     try:
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
@@ -58,17 +61,15 @@ def main(cfg):
         train_dataset._dir = eval_dataset._dir = dataset._dir
 
         dataloader = train_dataset.torch_dataloader(cfg.training.tokenizer.batch_num_samples,
-                                              random_sampling=False,
-                                              pin_memory=True,
-                                              tokenizer=True,
-                                              num_workers=2,
-                                              prefetch_factor=4)
+                                                    random_sampling=False,
+                                                    pin_memory=True,
+                                                    tokenizer=True,
+                                                    num_workers=2,
+                                                    prefetch_factor=4)
 
         custom_setup(cfg)
 
-        all_tokens = []
-
-        def log_routine(loss_dict: Union[dict, list], mode="train", media=True, batch=None):
+        def log_routine(loss_dict: Union[dict, list], mode="train", media=True, batch=None, count_tokens=None):
             if isinstance(loss_dict, list):
                 loss_dict = {k: sum([m[k] for m in loss_dict]) / len(loss_dict) for k in loss_dict[0]}
             loss_dict = {f"{mode}/{k}": v for k, v in loss_dict.items()}
@@ -90,52 +91,51 @@ def main(cfg):
             to_log.update(loss_dict)
 
             # tokens
-            if all_tokens:
-                all_tokens_t = torch.cat(all_tokens)
+            if count_tokens is not None:
+                all_tokens_t = torch.cat(count_tokens)
                 unique, counts = torch.unique(all_tokens_t, return_counts=True)
                 counts = sorted(counts, reverse=True)
-                s = 0
-                evenness_metric = 0
-                thresh = 0.95
+                s = []
                 for i, c in enumerate(counts):
-                    s += c / torch.numel(all_tokens_t)
-                    if s > thresh:
-                        evenness_metric = i / tokenizer.vocab_size
-                        break
-                to_log[f"{mode}/evenness_{thresh}"] = evenness_metric
-
-                all_tokens.clear()
+                    s.append(c.item())
+                f, ax = plt.subplots()
+                ax.plot(torch.arange(len(s)) / tokenizer.vocab_size, torch.log(torch.tensor(s)))
+                to_log[f"{mode}/tokens"] = wandb.Image(f)
+                plt.close("all")
 
             wandb.log(to_log)
-            tokenizer.train()
 
+        all_tokens = []
         for epoch in range(6):
             data_iterator = iter(dataloader)
             for i in tqdm(range(len(dataloader)), total=len(dataloader), desc=f"Epoch {epoch}: "):
                 if i % 400 == 0:
                     tokenizer.eval()
                     eval_loader = eval_dataset.torch_dataloader(cfg.training.tokenizer.batch_num_samples,
-                                              random_sampling=True,
-                                              pin_memory=True,
-                                              tokenizer=True,
-                                              parallelize=False,)
+                                                                random_sampling=True,
+                                                                pin_memory=True,
+                                                                tokenizer=True,
+                                                                parallelize=False, )
                     eval_iterator = iter(eval_loader)
                     eval_metrics = []
-                    all_tokens = []
+                    eval_tokens = []
                     with torch.no_grad():
-                        for eval_i in range(50):
+                        for eval_i in range(100):
                             sample = next(eval_iterator)
                             batch, op_flow = sample[:2]
                             batch["observations"] = batch["observations"].to(device)
                             tokens = [None]
                             loss = tokenizer.compute_loss(batch, tokens_placeholder=tokens, pixel_weights=None)
                             if tokens[0] is not None:
-                                all_tokens.append(tokens[0].detach())
+                                eval_tokens.append(tokens[0].detach())
                             eval_metrics.append(loss.intermediate_losses)
-                    log_routine(eval_metrics, mode="eval", batch=batch)
+                    log_routine(eval_metrics, mode="eval", batch=batch, count_tokens=eval_tokens)
                     tokenizer.train()
 
                 if i % 1200 == 0:
+                    if all_tokens:
+                        log_routine({}, media=False, count_tokens=all_tokens)
+                        all_tokens = []
                     tokenizer.init_embedding_kmeans(dataloader)
                     optimizer = torch.optim.Adam(tokenizer.parameters(),
                                                  lr=cfg.training.learning_rate)
@@ -145,7 +145,7 @@ def main(cfg):
                 batch["observations"] = batch["observations"].to(device)
                 tokens = [None]
                 loss = tokenizer.compute_loss(batch, tokens_placeholder=tokens, pixel_weights=None)
-                loss.loss_total.backward()
+                tokenizer.do_backward(loss.loss_total)
                 if tokens[0] is not None:
                     all_tokens.append(tokens[0].detach())
 
@@ -154,9 +154,8 @@ def main(cfg):
                     optimizer.step()
                     for param in tokenizer.parameters():
                         param.grad = None
-                    should_log_rec = (i+1)%(3*cfg.training.tokenizer.grad_acc_steps)==0
+                    should_log_rec = (i + 1) % (3 * cfg.training.tokenizer.grad_acc_steps) == 0
                     log_routine(loss.intermediate_losses, media=should_log_rec, batch=batch)
-
 
                 if (i + 1) % 400 == 0:
                     torch.save(tokenizer.state_dict(), "checkpoints/last.pt")
@@ -178,12 +177,13 @@ def inspect_decoder():
         return z_q
 
     tokenizer.load_state_dict(
-        torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\dist_quant_again\2024-04-30_23-43-51\checkpoints\last.pt")
+        torch.load(
+            r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\dist_quant_again\2024-04-30_23-43-51\checkpoints\last.pt")
     ).to(device)
     tokenizer.eval()
     episode = torch.load(Path(
-                r"C:\Users\Michael\PycharmProjects\Brawl-Stars-AI\outputs\log_eval\2024-04-25_08-17-09\checkpoints\dataset\32.pt"),
-            )
+        r"C:\Users\Michael\PycharmProjects\Brawl-Stars-AI\outputs\log_eval\2024-04-25_08-17-09\checkpoints\dataset\32.pt"),
+    )
     frame = episode["observations"][12] / 255.0
 
     enc_output = tokenizer.encode(frame[None, None], should_preprocess=True)

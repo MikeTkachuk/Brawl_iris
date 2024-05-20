@@ -13,6 +13,7 @@ from tqdm import tqdm
 from src.dataset import Batch
 from .lpips import LPIPS
 from .nets import Encoder, Decoder, Normalize
+from .adversarial import AdversarialLoss
 from src.utils import LossWithIntermediateLosses
 
 from sklearn.cluster import BisectingKMeans
@@ -41,6 +42,19 @@ class Tokenizer(nn.Module):
         self.lpips = LPIPS().eval() if with_lpips else None
         self.loss_weights = loss_weights
 
+        self.ad_loss = AdversarialLoss()
+        self.param_groups = {
+            "gen": [],
+            "discr": []
+        }
+        for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if "ad_loss" in n:
+                self.param_groups["discr"].append(p)
+            else:
+                self.param_groups["gen"].append(p)
+
     def __repr__(self) -> str:
         return "tokenizer"
 
@@ -62,20 +76,31 @@ class Tokenizer(nn.Module):
         z, z_quantized = enc_output.z, enc_output.z_quantized
         if tokens_placeholder is not None:
             tokens_placeholder[0] = enc_output.tokens
-        # Codebook loss. Notes:
-        # - beta position is different from taming and identical to original VQVAE paper
-        # - VQVAE uses 0.25 by default
-        beta = 1.0
-        commitment_loss = (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
+
+        beta = 0.25  # simplify z optimization. codebook will be updated with kmeans
+        commitment_loss = (1 - beta) * (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
         if pixel_weights is not None:
             reconstruction_loss = (pixel_weights * torch.square(observations - reconstructions)).mean()
         else:
             reconstruction_loss = torch.square(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
 
+        ad_logits = self.ad_loss(torch.cat([observations, reconstructions]), blur=True).flatten()
+        discr_labels = torch.zeros((observations.size(0)*2,), dtype=torch.float, device=ad_logits.device)
+        discr_labels[:observations.size(0)] = 1
+        discr_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits, discr_labels)
+        gen_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits[observations.size(0):],
+                                               torch.ones_like(discr_labels)[:observations.size(0)])
+
         return LossWithIntermediateLosses(commitment_loss=self.loss_weights[0]*commitment_loss,
-                                          reconstruction_loss=self.loss_weights[0]*reconstruction_loss,
-                                          perceptual_loss=self.loss_weights[0]*perceptual_loss)
+                                          reconstruction_loss=self.loss_weights[1]*reconstruction_loss,
+                                          perceptual_loss=self.loss_weights[2]*perceptual_loss,
+                                          discr_loss=self.loss_weights[3]*discr_loss,
+                                          gen_loss=self.loss_weights[4]*gen_loss)
+
+    def do_backward(self, loss):
+        loss.backward(inputs=self.param_groups["discr"], retain_graph=True)
+        loss.backward(inputs=self.param_groups["gen"])
 
     def encode(self, x: torch.Tensor, should_preprocess: bool = False) -> TokenizerEncoderOutput:
         if should_preprocess:

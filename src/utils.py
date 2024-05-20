@@ -123,6 +123,9 @@ class LossWithIntermediateLosses:
         self.loss_total = self.loss_total / value
         return self
 
+    def __getitem__(self, item):
+        return self._kwargs[item]
+
 
 class EpisodeDirManager:
     def __init__(self, episode_dir: Path, max_num_episodes: int) -> None:

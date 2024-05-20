@@ -18,7 +18,10 @@ from tqdm import tqdm
 
 from src.episode import Episode
 
-set_start_method("spawn")
+try:
+    set_start_method("spawn")
+except RuntimeError:
+    pass  # raises RuntimeError if set twice
 
 Batch = Dict[str, torch.Tensor]
 
