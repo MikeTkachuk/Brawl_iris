@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "new_data_tok"
+  name: "12x12"
   group: null
   tags: []
   notes: ""

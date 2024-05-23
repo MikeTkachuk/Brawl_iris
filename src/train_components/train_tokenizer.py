@@ -42,6 +42,10 @@ def custom_setup(cfg):
 @hydra.main(config_path="../../config", config_name="trainer")
 def main(cfg):
     # todo: increase loss contrast (abs(l)^3 / 3 loss)
+    # todo: (?) add different maps. tok overfits to patch distribution of single map
+    # todo: fit -> add mistakes to dataset -> fit again with new weights
+    # todo: [WM] eval with decoder, log tok losses
+    # todo: [WM] sequence gan loss for distribution matching
     try:
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +82,7 @@ def main(cfg):
             to_log = {}
             if media:
                 obs_item = batch["observations"][0]
+                was_training = tokenizer.training
                 tokenizer.eval()
                 with torch.no_grad():
                     reconstruction_q = tokenizer.encode_decode(obs_item, True, True).detach()
@@ -88,6 +93,8 @@ def main(cfg):
                     torch.uint8)
                 reconstruction = torch.nn.functional.interpolate(reconstruction, scale_factor=(1.0, 2.0))
                 to_log[f"{mode}/reconstructions"] = wandb.Image(reconstruction[0].permute(1, 2, 0).numpy())
+                if was_training:
+                    tokenizer.train()
             to_log.update(loss_dict)
 
             # tokens
@@ -136,9 +143,11 @@ def main(cfg):
                     if all_tokens:
                         log_routine({}, media=False, count_tokens=all_tokens)
                         all_tokens = []
-                    tokenizer.init_embedding_kmeans(dataloader)
-                    optimizer = torch.optim.Adam(tokenizer.parameters(),
-                                                 lr=cfg.training.learning_rate)
+                    tokenizer.eval()
+                    tokenizer.init_embedding_kmeans(dataloader, num_batches=256)
+                    tokenizer.train()
+                    # optimizer = torch.optim.Adam(tokenizer.parameters(),
+                    #                              lr=cfg.training.learning_rate)
 
                 sample = next(data_iterator)
                 batch, op_flow = sample[:2]
@@ -150,6 +159,13 @@ def main(cfg):
                     all_tokens.append(tokens[0].detach())
 
                 if (i + 1) % cfg.training.tokenizer.grad_acc_steps == 0:
+                    # # todo:
+                    # g = tokenizer.ad_loss.discriminator[0].weight.grad.abs().mean(0)
+                    # f, ax = plt.subplots()
+                    # ax.plot(g.cpu().numpy())
+                    # wandb.log({"train/discr_grad": wandb.Image(f)})
+                    # plt.close("all")
+                    # # end todo
                     adaptive_gradient_clipping(tokenizer.parameters(), lam=cfg.training.actor_critic.agc_lambda)
                     optimizer.step()
                     for param in tokenizer.parameters():
@@ -163,31 +179,6 @@ def main(cfg):
     finally:
         # shutil.rmtree(Path(SOURCE_ROOT) / r"input_artifacts/dataset/preprocessed")
         wandb.finish()
-
-
-def inspect_decoder():
-    with hydra.initialize(config_path="../config"):
-        cfg = hydra.compose(config_name="trainer")
-
-    tokenizer: Tokenizer = instantiate(cfg.tokenizer)
-
-    def assemble_z_q(tokens):
-        tokens = torch.tensor(tokens, dtype=torch.long).reshape(1, 8, 8)
-        z_q = tokenizer.embedding.weight[tokens]
-        return z_q
-
-    tokenizer.load_state_dict(
-        torch.load(
-            r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\dist_quant_again\2024-04-30_23-43-51\checkpoints\last.pt")
-    ).to(device)
-    tokenizer.eval()
-    episode = torch.load(Path(
-        r"C:\Users\Michael\PycharmProjects\Brawl-Stars-AI\outputs\log_eval\2024-04-25_08-17-09\checkpoints\dataset\32.pt"),
-    )
-    frame = episode["observations"][12] / 255.0
-
-    enc_output = tokenizer.encode(frame[None, None], should_preprocess=True)
-    decoded = tokenizer.decode(enc_output.z_quantized, should_postprocess=True)
 
 
 if __name__ == "__main__":

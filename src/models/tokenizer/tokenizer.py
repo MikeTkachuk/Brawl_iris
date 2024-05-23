@@ -1,7 +1,7 @@
 """
 Credits to https://github.com/CompVis/taming-transformers
 """
-
+import time
 from dataclasses import dataclass
 from typing import Any, Tuple
 
@@ -28,7 +28,7 @@ class TokenizerEncoderOutput:
 
 class Tokenizer(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int, encoder: Encoder, decoder: Decoder,
-                 with_lpips: bool = True, loss_weights=(1.0, 1.0, 1.0)) -> None:
+                 with_lpips: bool = True, loss_weights=(1.0, 1.0, 1.0, 1.0, 1.0), gan_loss=False) -> None:
         super().__init__()
         self.vocab_size = vocab_size
         self.encoder = encoder
@@ -42,7 +42,9 @@ class Tokenizer(nn.Module):
         self.lpips = LPIPS().eval() if with_lpips else None
         self.loss_weights = loss_weights
 
-        self.ad_loss = AdversarialLoss()
+        self.ad_loss_enabled = gan_loss
+        if self.ad_loss_enabled:
+            self.ad_loss = AdversarialLoss()
         self.param_groups = {
             "gen": [],
             "discr": []
@@ -84,13 +86,16 @@ class Tokenizer(nn.Module):
         else:
             reconstruction_loss = torch.square(observations - reconstructions).mean()
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
-
-        ad_logits = self.ad_loss(torch.cat([observations, reconstructions]), blur=True).flatten()
-        discr_labels = torch.zeros((observations.size(0)*2,), dtype=torch.float, device=ad_logits.device)
-        discr_labels[:observations.size(0)] = 1
-        discr_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits, discr_labels)
-        gen_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits[observations.size(0):],
-                                               torch.ones_like(discr_labels)[:observations.size(0)])
+        if self.ad_loss_enabled:
+            ad_logits = self.ad_loss(torch.cat([observations, reconstructions]), blur=True).flatten()
+            discr_labels = torch.zeros((observations.size(0)*2,), dtype=torch.float, device=ad_logits.device)
+            discr_labels[:observations.size(0)] = 1
+            discr_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits, discr_labels)
+            gen_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits[observations.size(0):],
+                                                   torch.ones_like(discr_labels)[:observations.size(0)])
+        else:
+            discr_loss = 0
+            gen_loss = 0
 
         return LossWithIntermediateLosses(commitment_loss=self.loss_weights[0]*commitment_loss,
                                           reconstruction_loss=self.loss_weights[1]*reconstruction_loss,
@@ -99,7 +104,8 @@ class Tokenizer(nn.Module):
                                           gen_loss=self.loss_weights[4]*gen_loss)
 
     def do_backward(self, loss):
-        loss.backward(inputs=self.param_groups["discr"], retain_graph=True)
+        if self.ad_loss_enabled:
+            loss.backward(inputs=self.param_groups["discr"], retain_graph=True)
         loss.backward(inputs=self.param_groups["gen"])
 
     def encode(self, x: torch.Tensor, should_preprocess: bool = False) -> TokenizerEncoderOutput:
