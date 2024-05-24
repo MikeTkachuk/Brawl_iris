@@ -29,7 +29,6 @@ device = "cuda"
 
 def custom_setup(cfg):
     torch.backends.cudnn.benchmark = True
-    set_seed(cfg.common.seed)
     if sys.gettrace() is not None:  # if debugging
         cfg.wandb.mode = "offline"
     cfg.wandb.tags = list(set(cfg.wandb.tags or [] + ["tokenizer"]))
@@ -47,6 +46,7 @@ def main(cfg):
     # todo: [WM] eval with decoder, log tok losses
     # todo: [WM] sequence gan loss for distribution matching
     try:
+        set_seed(cfg.common.seed)
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
         dataset: EpisodesDataset = instantiate(cfg.datasets.train)
@@ -146,8 +146,6 @@ def main(cfg):
                     tokenizer.eval()
                     tokenizer.init_embedding_kmeans(dataloader, num_batches=256)
                     tokenizer.train()
-                    # optimizer = torch.optim.Adam(tokenizer.parameters(),
-                    #                              lr=cfg.training.learning_rate)
 
                 sample = next(data_iterator)
                 batch, op_flow = sample[:2]

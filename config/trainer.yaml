@@ -16,10 +16,10 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "12x12"
+  name: "squeeze_256_vocab"
   group: null
   tags: []
-  notes: ""
+  notes: "1024->256 vocab finetune"
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
