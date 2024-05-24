@@ -1,6 +1,5 @@
 # shellcheck disable=SC2164
-cd /workspace
-apt-get install unzip ffmpeg libsm6 libxext6  -y
+apt-get update && apt-get install unzip ffmpeg libsm6 libxext6  -y
 unzip code.zip -d Brawl_iris
 mv input_artifacts Brawl_iris/input_artifacts -v -f
 cd Brawl_iris

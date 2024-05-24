@@ -1,15 +1,15 @@
 _target_: src.models.TransformerConfig
-tokens_per_block: 65
-max_blocks: 20
+tokens_per_block: 145
+max_blocks: 10
 attention: 'causal'
 num_layers: 10
-num_heads: 8
-embed_dim: 512
+num_heads: 4
+embed_dim: 256
 embed_pdrop: 0.005
 resid_pdrop: 0.01
 attn_pdrop: 0.01
 
-n_last_frames_drop: 3
-last_frames_pdrop: 0.9
+n_last_frames_drop: 0
+last_frames_pdrop: 0.0
 
 # TODO add linear emb size for continuous

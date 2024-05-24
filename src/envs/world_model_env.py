@@ -60,12 +60,23 @@ class WorldModelEnv:
     def step(self, action: Union[int, np.ndarray, torch.LongTensor],
              continuous=None,
              should_predict_next_obs: bool = True,
-             context_shift=False):
-        if isinstance(context_shift, bool):
+             context_shift=False,
+             max_context=None):
+        """
+
+        :param action:
+        :param continuous:
+        :param should_predict_next_obs:
+        :param context_shift: if True, once context window is filled removes the first block from context,
+         otherwise resets whole context.
+        :param max_context: optional int > 0. The max number of blocks in context. Default - config.max_blocks
+        :return:
+        """
+        if max_context is None:
             max_context = self.world_model.config.max_tokens
         else:
-            assert isinstance(context_shift, int) and context_shift > 0
-            max_context = context_shift * self.world_model.config.tokens_per_block
+            assert isinstance(max_context, int) and max_context > 0
+            max_context = max_context * self.world_model.config.tokens_per_block
         assert self.keys_values_wm is not None and self.num_observations_tokens is not None
 
         num_passes = 1 + self.num_observations_tokens if should_predict_next_obs else 1

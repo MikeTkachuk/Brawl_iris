@@ -4,6 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 import time
+import os
 
 SOURCE_ROOT = str(Path(__file__).absolute().parents[2])
 sys.path.append(SOURCE_ROOT)
@@ -118,6 +119,7 @@ def custom_setup(cfg):
 @hydra.main(config_path="../../config", config_name="trainer")
 def main(cfg):
     try:
+        print(f"PID: {os.getpid()}")
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
         tokenizer: Tokenizer = instantiate(cfg.tokenizer)
@@ -156,7 +158,7 @@ def main(cfg):
                 if (n_step + 1) % (cfg.training.world_model.grad_acc_steps*4) == 0:
                     wandb.log(to_log)
 
-            if n_step % 500 == 0:
+            if n_step % (500 * cfg.training.world_model.grad_acc_steps) == 0:
                 eval_dataloader = get_dataloader(eval_dataset, batch_size=cfg.training.world_model.batch_num_samples,
                                                  segment_len=cfg.common.sequence_length, steps_per_epoch=100)
                 world_model.eval()
@@ -169,16 +171,15 @@ def main(cfg):
                 wandb.log(avg_eval_metrics)
                 world_model.train()
 
-            if (n_step + 1) % 100 == 0:
+            if (n_step + 1) % (100 * cfg.training.world_model.grad_acc_steps) == 0:
                 torch.save(world_model.state_dict(), "checkpoints/last.pt")
                 torch.save(optimizer.state_dict(), "checkpoints/optimizer.pt")
-            if (n_step + 1) % 1000 == 0:
+            if (n_step + 1) % (1000 * cfg.training.world_model.grad_acc_steps) == 0:
                 Path(f"checkpoints{n_step // 1000}").mkdir()
                 torch.save(world_model.state_dict(), f"checkpoints{n_step // 1000}/last.pt")
                 torch.save(optimizer.state_dict(), f"checkpoints{n_step // 1000}/optimizer.pt")
 
     finally:
-        shutil.rmtree(r"checkpoints/dataset")
         wandb.finish()
 
 
@@ -229,9 +230,9 @@ def explore_world_model(checkpoint_path=None, max_context=None):
         token = action_tokenizer.create_action_token(
             make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor
         )
-        tok_b = wm_env.obs_tokens.reshape(8, 8)
+        tok_b = wm_env.obs_tokens.reshape(12, 12)
         out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=max_context or True)
-        print(wm_env.obs_tokens.reshape(8, 8) - tok_b)
+        print(wm_env.obs_tokens.reshape(12, 12) - tok_b)
         return out
 
     ###
@@ -349,7 +350,7 @@ if __name__ == "__main__":
     #     plt.imshow(img)
     #     plt.title(ep["actions"][i-1])
     #     plt.show()
-    main()
-    # explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\vastai_wm_nolastobs.pt",
-    #                     max_context=None)
+    # main()
+    explore_world_model(r"C:\Users\Michael\Downloads\last.pt",
+                        max_context=None)
     # generate_token_dataset()

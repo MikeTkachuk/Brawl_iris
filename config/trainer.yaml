@@ -16,10 +16,10 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "omit_prev_frame"
+  name: "12x12_wm"
   group: null
   tags: []
-  notes: "attention dropout 0.6 for previous frame"
+  notes: ""
 
 initialization:
   storage_prefix: "" # run prefix on bucket to load agent weights. Prioritized over path
@@ -48,7 +48,7 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 1e-4
+  learning_rate: 3e-5
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
@@ -58,8 +58,8 @@ training:
     start_after_epochs: 99999
     steps_per_epoch: 200
   world_model:
-    batch_num_samples: 12 # rtx3090
-    grad_acc_steps: 2
+    batch_num_samples: 20 # rtx3090
+    grad_acc_steps: 1
     agc_lambda: 0.1
     max_grad_norm: 10.0
     weight_decay: 0.01
