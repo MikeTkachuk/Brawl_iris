@@ -134,7 +134,8 @@ class EpisodesDataset:
                  max_num_episodes: Optional[int] = None,
                  name: Optional[str] = None,
                  resolution: Optional[int] = None,
-                 lazy: bool = False
+                 lazy: bool = False,
+                 unlink_old: bool = False
                  ) -> None:
         self.max_num_episodes = max_num_episodes
         self.resolution = resolution
@@ -145,6 +146,7 @@ class EpisodesDataset:
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
         self.disk_episodes = deque()
         self.lazy = lazy
+        self.unlink_old = unlink_old
         self.episode_weights = {}
 
         self._dir = None
@@ -168,7 +170,7 @@ class EpisodesDataset:
         return episode_id
 
     def get_episode(self, episode_id: int) -> Episode:
-        assert episode_id in self.disk_episodes
+        assert episode_id in self.disk_episodes, "Provided id is invalid or was removed from the pool"
         if episode_id in self.episode_id_to_queue_idx:
             queue_idx = self.episode_id_to_queue_idx[episode_id]
             return self.episodes[queue_idx]
@@ -309,14 +311,18 @@ class EpisodesDataset:
         episodes_segments = [e_s.__dict__ for e_s in episodes_segments]
         batch = {}
         for k in episodes_segments[0]:
-            if isinstance(episodes_segments[0][k], torch.Tensor):
+            if k == "observations":
+                observations = []
+                for e_s in episodes_segments:
+                    e_s_obs = e_s["observations"]
+                    if resolution is not None and not torch.all(
+                            torch.tensor(e_s_obs.shape[-2:]) == resolution):
+                        e_s_obs = torch.nn.functional.interpolate(e_s_obs, (resolution, resolution),
+                                                                  mode='nearest')  # torch 2.1 supports uint8 bilinear
+                    observations.append(e_s_obs)
+                batch['observations'] = torch.stack(observations).float() / 255.0  # int8 to float and scale
+            elif isinstance(episodes_segments[0][k], torch.Tensor):
                 batch[k] = torch.stack([e_s[k] for e_s in episodes_segments])
-        if resolution is not None and not torch.all(batch["observations"].shape[-2:] == resolution):
-            to_resize = rearrange(batch['observations'], 'b t ... -> (b t) ...')
-            resized = torch.nn.functional.interpolate(to_resize, (resolution, resolution),
-                                                      mode='nearest')  # torch 2.1 supports uint8 bilinear
-            batch['observations'] = rearrange(resized, '(b t) ... -> b t ...', b=batch['observations'].shape[0])
-        batch['observations'] = batch['observations'].float() / 255.0  # int8 to float and scale
         return batch
 
     def traverse(self, batch_num_samples: int, chunk_size: int):
@@ -345,7 +351,8 @@ class EpisodesDataset:
             episode.save(episode_path)
         for episode_id in self.newly_deleted_episodes:
             episode_path = directory / f'{episode_id}.pt'
-            episode_path.unlink()
+            if self.unlink_old:
+                episode_path.unlink()
             self.episode_weights.pop(episode_id)
 
         self.newly_modified_episodes, self.newly_deleted_episodes = set(), set()
@@ -359,7 +366,7 @@ class EpisodesDataset:
         assert directory.is_dir()
         assert not self.episodes or self.lazy, "Repetitive loading"
         episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem.isnumeric()])
-
+        episode_ids = episode_ids[-self.max_num_episodes:]  # if keeping old episodes
         if not len(episode_ids):
             self.disk_episodes = deque()
             self.num_seen_episodes = 0

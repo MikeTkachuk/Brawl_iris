@@ -71,7 +71,7 @@ class Block(nn.Module):
             nn.Dropout(config.resid_pdrop),
         )
 
-    def forward(self, x: torch.Tensor, past_keys_values: Optional[KeysValues] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_keys_values: Optional[KVCache] = None) -> torch.Tensor:
         x_attn = self.attn(self.ln1(x), past_keys_values)
         x = x + x_attn
         x = x + self.mlp(self.ln2(x))

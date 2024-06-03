@@ -5,6 +5,7 @@ train:
   #max_ram_usage: 30G
   name: train_dataset
   lazy: True
+  unlink_old: False
 test:
   _target_: src.dataset.EpisodesDataset
   max_num_episodes: null

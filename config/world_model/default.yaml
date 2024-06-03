@@ -1,13 +1,13 @@
 _target_: src.models.TransformerConfig
 tokens_per_block: 145
-max_blocks: 10
+max_blocks: 8
 attention: 'causal'
-num_layers: 10
-num_heads: 4
-embed_dim: 256
-embed_pdrop: 0.005
-resid_pdrop: 0.01
-attn_pdrop: 0.01
+num_layers: 4
+num_heads: 8
+embed_dim: 512
+embed_pdrop: 0.05
+resid_pdrop: 0.05
+attn_pdrop: 0.05
 
 n_last_frames_drop: 0
 last_frames_pdrop: 0.0

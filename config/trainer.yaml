@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "12x12_wm"
+  name: "wm_v2"
   group: null
   tags: []
   notes: ""
@@ -48,7 +48,7 @@ training:
   should: True
   on_cloud: True
   epochs_per_job: 1 # number of epochs to be run per job submission
-  learning_rate: 3e-5
+  learning_rate: 1e-4
   sampling_weights: [0.125, 0.125, 0.25, 0.5]
   tokenizer:
     batch_num_samples: 8 # max 24 # old 256
@@ -58,22 +58,22 @@ training:
     start_after_epochs: 99999
     steps_per_epoch: 200
   world_model:
-    batch_num_samples: 20 # rtx3090
+    batch_num_samples: 10 # rtx3090
     grad_acc_steps: 1
     agc_lambda: 0.1
     max_grad_norm: 10.0
-    weight_decay: 0.01
+    weight_decay: 0.0
     start_after_epochs: 99999
     steps_per_epoch: 200
   actor_critic:
     start_after_epochs: 0
     batch_num_samples: 32
-    grad_acc_steps: 2
+    grad_acc_steps: 1
     collection_steps: 1
     join_collection: False
     steps_per_epoch: 100
     imagine_horizon: ${common.sequence_length}
-    lr_heads: 0.0001  # actor head
+    lr_heads: ${training.learning_rate}  # actor head
     lr_warmup_scale: 0.1
     lr_warmup_steps: 5
     max_grad_norm: 3.0 # 10.0
@@ -81,6 +81,7 @@ training:
     adam_betas: [0.9, 0.99]
     entropy_weight: 0.1
     entropy_continuous_weight: 0.005
+    sequence_length: 40
     burn_in: 10
     lambda_warmup_init: False
     lambda_: 0.6

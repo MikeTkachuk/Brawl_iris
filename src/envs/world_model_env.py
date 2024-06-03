@@ -68,7 +68,7 @@ class WorldModelEnv:
         :param continuous:
         :param should_predict_next_obs:
         :param context_shift: if True, once context window is filled removes the first block from context,
-         otherwise resets whole context.
+         otherwise resets whole context. # TODO: has bug as it does not regard pos emb shift
         :param max_context: optional int > 0. The max number of blocks in context. Default - config.max_blocks
         :return:
         """
@@ -81,7 +81,7 @@ class WorldModelEnv:
 
         num_passes = 1 + self.num_observations_tokens if should_predict_next_obs else 1
 
-        output_sequence, obs_tokens = [], []
+        output_sequence, obs_tokens, obs_probas = [], [], []
 
         if self.keys_values_wm.size + num_passes > max_context:
             if context_shift:
@@ -106,11 +106,13 @@ class WorldModelEnv:
                 done = Categorical(logits=outputs_wm.logits_ends/self.temperature).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
 
             if k < self.num_observations_tokens:
-                token = Categorical(logits=outputs_wm.logits_observations/self.temperature).sample()
+                token_dist = Categorical(logits=outputs_wm.logits_observations/self.temperature)
+                token = token_dist.sample()
                 obs_tokens.append(token)
+                obs_probas.append(token_dist.log_prob(token))
 
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
-
+        self.obs_probas = torch.cat(obs_probas, dim=1)
         obs = self.decode_obs_tokens() if should_predict_next_obs else None
         return obs, reward, done, None
 

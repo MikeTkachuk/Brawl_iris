@@ -39,6 +39,7 @@ def generate_token_dataset():
     tokenizer.to(device).eval()
 
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
+    dataset.max_num_episodes = int(1E9)
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
     token_dataset = {}
     for ep_id in tqdm(dataset.disk_episodes, desc="Episodes: "):
@@ -104,7 +105,6 @@ def get_dataloader(dataset: dict, batch_size, segment_len, steps_per_epoch=None)
 
 def custom_setup(cfg):
     torch.backends.cudnn.benchmark = True
-    set_seed(cfg.common.seed)
     if sys.gettrace() is not None:  # if debugging
         cfg.wandb.mode = "offline"
         cfg.training.world_model.batch_num_samples = 2
@@ -120,6 +120,8 @@ def custom_setup(cfg):
 def main(cfg):
     try:
         print(f"PID: {os.getpid()}")
+        set_seed(cfg.common.seed)
+
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
 
         tokenizer: Tokenizer = instantiate(cfg.tokenizer)
@@ -131,8 +133,8 @@ def main(cfg):
                                      lr=cfg.training.learning_rate)
 
         # load checkpoint
-        # world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt", map_location=device))
-        # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\optimizer.pt", map_location=device))
+        # world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\last.pt", map_location=device))
+        # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\optimizer.pt", map_location=device))
 
         dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset.pt")
         custom_setup(cfg)
@@ -174,7 +176,7 @@ def main(cfg):
             if (n_step + 1) % (100 * cfg.training.world_model.grad_acc_steps) == 0:
                 torch.save(world_model.state_dict(), "checkpoints/last.pt")
                 torch.save(optimizer.state_dict(), "checkpoints/optimizer.pt")
-            if (n_step + 1) % (1000 * cfg.training.world_model.grad_acc_steps) == 0:
+            if (n_step + 1) % (4000 * cfg.training.world_model.grad_acc_steps) == 0:
                 Path(f"checkpoints{n_step // 1000}").mkdir()
                 torch.save(world_model.state_dict(), f"checkpoints{n_step // 1000}/last.pt")
                 torch.save(optimizer.state_dict(), f"checkpoints{n_step // 1000}/optimizer.pt")
@@ -190,7 +192,7 @@ def main_ac_head(cfg):
 
 
 @torch.no_grad()
-def explore_world_model(checkpoint_path=None, max_context=None):
+def explore_world_model(checkpoint_path=None, max_context=None, context_shift=False):
     from src.envs.world_model_env import WorldModelEnv
     wm_checkpoint_path = checkpoint_path or Path(
         r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt")
@@ -209,13 +211,14 @@ def explore_world_model(checkpoint_path=None, max_context=None):
                              config=instantiate(cfg.world_model)).to(device).eval()
     world_model.load_state_dict(torch.load(wm_checkpoint_path, map_location=device), strict=False)
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
+    dataset.max_num_episodes = int(1E9)
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
 
     wm_env = WorldModelEnv(tokenizer, world_model, device)
     action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
 
     def env_reset(ep_id=None, frame_id=None):
-        ep_id = ep_id or random.randint(0, len(dataset))
+        ep_id = ep_id or random.randint(dataset.num_seen_episodes - len(dataset), dataset.num_seen_episodes - 1)
         episode = dataset.get_episode(ep_id)
         frame_id = frame_id or random.randint(0, len(episode) - 1)
         observation = episode.observations[[frame_id]]
@@ -231,8 +234,10 @@ def explore_world_model(checkpoint_path=None, max_context=None):
             make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor
         )
         tok_b = wm_env.obs_tokens.reshape(12, 12)
-        out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=max_context or True)
-        print(wm_env.obs_tokens.reshape(12, 12) - tok_b)
+        out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=context_shift,
+                          max_context=max_context)
+        to_print = np.array_str(wm_env.obs_probas.reshape(12, 12).cpu().numpy(), precision=2, suppress_small=True)
+        print(to_print)
         return out
 
     ###
@@ -244,7 +249,7 @@ def explore_world_model(checkpoint_path=None, max_context=None):
     from PIL import Image, ImageTk
     import numpy as np
 
-    IMG_SIZE = 350
+    IMG_SIZE = 512
 
     class Counter:
         pass
@@ -273,7 +278,7 @@ def explore_world_model(checkpoint_path=None, max_context=None):
         if isinstance(img, torch.Tensor):
             img = img.cpu().squeeze().permute(1, 2, 0).numpy()
             img = (img * 255).astype(np.uint8)
-        p_image = ImageTk.PhotoImage(Image.fromarray(img, mode="RGB"))
+        p_image = ImageTk.PhotoImage(Image.fromarray(img, mode="RGB").resize((IMG_SIZE, IMG_SIZE)))
         image_label.config(image=p_image)
         image_label.image = p_image
 
@@ -340,8 +345,9 @@ def explore_world_model(checkpoint_path=None, max_context=None):
 
 if __name__ == "__main__":
     # todo: add eval to tokenizer and wm (add more episodes)
-    # todo: collect true random behaviour with fixed movement token (20% time standing)
-    # todo: 0.5s frame too easy, wm collapses into copying previous frame. Train on 2 action gap (attention mask)
+    # todo: Bert style pretraining (maybe extra attention to action tokens)
+    # todo: eval with decoder, log tokenizer losses
+    # todo: sequence gan loss for distribution matching
     # ep = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\dataset\43.pt")
     # observations = ep["observations"]
     # import matplotlib.pyplot as plt
@@ -351,6 +357,6 @@ if __name__ == "__main__":
     #     plt.title(ep["actions"][i-1])
     #     plt.show()
     # main()
-    explore_world_model(r"C:\Users\Michael\Downloads\last.pt",
+    explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\wm_v2\2024-06-02_12-26-36\checkpoints\last.pt",
                         max_context=None)
     # generate_token_dataset()
