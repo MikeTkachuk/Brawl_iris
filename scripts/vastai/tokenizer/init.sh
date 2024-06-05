@@ -1,0 +1,15 @@
+# shellcheck disable=SC2164
+cd /workspace
+apt-get install unzip ffmpeg libsm6 libxext6  -y
+unzip code.zip -d Brawl_iris
+unzip input_artifacts/dataset.zip -d input_artifacts/
+rm input_artifacts/dataset.zip
+mv input_artifacts Brawl_iris/input_artifacts -v -f
+cd Brawl_iris
+conda env create -f scripts/vastai/environment.yaml
+eval "$(conda shell.bash hook)"
+conda init bash
+conda activate brawl_stars
+wandb login $WANDB_API_KEY
+
+python src/train_components/train_tokenizer.py
