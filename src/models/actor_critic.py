@@ -15,7 +15,7 @@ import torch.utils.checkpoint
 from tqdm import tqdm
 
 from src.dataset import Batch
-# from src.envs.world_model_env import WorldModelEnv
+from src.envs.world_model_env import WorldModelEnv
 from src.models.tokenizer import Tokenizer
 from src.models.tokenizer.nets import Normalize
 from src.models.world_model import WorldModel

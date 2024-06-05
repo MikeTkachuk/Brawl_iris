@@ -1,7 +1,5 @@
 import random
 from typing import List, Optional, Union
-
-import gym
 from einops import rearrange
 import numpy as np
 from PIL import Image
@@ -14,7 +12,7 @@ from src.utils import extract_state_dict
 
 class WorldModelEnv:
 
-    def __init__(self, tokenizer: torch.nn.Module, world_model: torch.nn.Module, device: Union[str, torch.device], env: Optional[gym.Env] = None) -> None:
+    def __init__(self, tokenizer: torch.nn.Module, world_model: torch.nn.Module, device: Union[str, torch.device], env=None) -> None:
 
         self.device = torch.device(device)
         self.world_model = world_model.to(self.device).eval()
