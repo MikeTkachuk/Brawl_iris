@@ -87,7 +87,7 @@ def get_dataloader(dataset: dict, batch_size, segment_len, steps_per_epoch=None)
         for ep_id in sampled_episodes:
             sampled_episode: dict = dataset[ep_id]
             episode_len = len(sampled_episode["ends"])
-            start = random.randint(0, max(0, episode_len - segment_len))
+            start = random.randint(0, max(0, episode_len - 1))
             stop = start + segment_len
             segments.append(_segment(sampled_episode, start, stop))
         out = {k: torch.stack([s[k] for s in segments]) for k in segments[0]}
@@ -116,7 +116,7 @@ def custom_setup(cfg):
                **cfg.wandb)
 
 
-@hydra.main(config_path="../../config", config_name="trainer")
+@hydra.main(config_path="../../config", config_name="world_model")
 def main(cfg):
     try:
         print(f"PID: {os.getpid()}")
@@ -128,9 +128,13 @@ def main(cfg):
         action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
         world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=action_tokenizer.n_actions,
                                  act_continuous_size=3,
-                                 config=instantiate(cfg.world_model)).to(device).train()
+                                 config=instantiate(cfg.world_model),
+                                 reward_map=cfg.env.reward_map,
+                                 reward_divisor=cfg.env.reward_divisor
+                                 ).to(device).train().eval()
         optimizer = torch.optim.Adam(world_model.parameters(),
-                                     lr=cfg.training.learning_rate)
+                                     lr=cfg.training.learning_rate,
+                                     weight_decay=cfg.training.world_model.weight_decay)
 
         # load checkpoint
         # world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\last.pt", map_location=device))
@@ -157,7 +161,7 @@ def main(cfg):
                 to_log = {}
                 to_log.update(loss.intermediate_losses)
                 to_log = {f"train/{k}": v for k, v in to_log.items()}
-                if (n_step + 1) % (cfg.training.world_model.grad_acc_steps*4) == 0:
+                if (n_step + 1) % (cfg.training.world_model.grad_acc_steps * 4) == 0:
                     wandb.log(to_log)
 
             if n_step % (500 * cfg.training.world_model.grad_acc_steps) == 0:
@@ -169,7 +173,8 @@ def main(cfg):
                     for batch in eval_dataloader:
                         batch = {k: v.to(device) for k, v in batch.items()}
                         eval_metrics.append(world_model.compute_loss(batch, None).intermediate_losses)
-                avg_eval_metrics = {f"eval/{k}": sum([m[k] for m in eval_metrics]) / len(eval_metrics) for k in eval_metrics[0]}
+                avg_eval_metrics = {f"eval/{k}": sum([m[k] for m in eval_metrics]) / len(eval_metrics) for k in
+                                    eval_metrics[0]}
                 wandb.log(avg_eval_metrics)
                 world_model.train()
 
@@ -198,7 +203,7 @@ def explore_world_model(checkpoint_path=None, max_context=None, context_shift=Fa
         r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt")
 
     with hydra.initialize(config_path="../../config"):
-        cfg = hydra.compose(config_name="trainer")
+        cfg = hydra.compose(config_name="world_model")
 
     tokenizer: Tokenizer = instantiate(cfg.tokenizer)
     tokenizer.load_state_dict(
@@ -210,6 +215,13 @@ def explore_world_model(checkpoint_path=None, max_context=None, context_shift=Fa
                              act_continuous_size=3,
                              config=instantiate(cfg.world_model)).to(device).eval()
     world_model.load_state_dict(torch.load(wm_checkpoint_path, map_location=device), strict=False)
+                             config=instantiate(cfg.world_model),
+                             reward_map=cfg.env.reward_map,
+                             reward_divisor=cfg.env.reward_divisor
+                             ).to(device).eval()
+    state_dict = torch.load(wm_checkpoint_path, map_location=device)
+
+    world_model.load_state_dict(state_dict, strict=False)
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
     dataset.max_num_episodes = int(1E9)
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
@@ -237,7 +249,7 @@ def explore_world_model(checkpoint_path=None, max_context=None, context_shift=Fa
         out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=context_shift,
                           max_context=max_context)
         to_print = np.array_str(wm_env.obs_probas.reshape(12, 12).cpu().numpy(), precision=2, suppress_small=True)
-        print(to_print)
+        print(tok_b)
         return out
 
     ###
@@ -356,7 +368,8 @@ if __name__ == "__main__":
     #     plt.imshow(img)
     #     plt.title(ep["actions"][i-1])
     #     plt.show()
-    # main()
-    explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\wm_v2\2024-06-02_12-26-36\checkpoints\last.pt",
-                        max_context=None)
     # generate_token_dataset()
+    # main()
+    explore_world_model(
+        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\w_decay\2024-06-11_09-58-03\checkpoints\last.pt",
+        max_context=None)

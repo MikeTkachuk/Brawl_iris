@@ -1,6 +1,8 @@
 _target_: src.models.actor_critic.ConvActorCritic
-action_split: [1, 1, 1, 1, 4, 4]
+move_shot_anchors: [4, 4]
 act_continuous_size: 3
+act_lock: [null, null, null, 0, null, 0]  # mske move, make shot, super, gadget, move anch, shot anch
+act_continuous_lock: [0, 0, -10]  # move shift, shot shift, shot strength
 activation:
   _target_: torch.nn.LeakyReLU
   negative_slope: 0.15

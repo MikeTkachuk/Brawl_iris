@@ -19,7 +19,7 @@ from src.envs.world_model_env import WorldModelEnv
 from src.models.tokenizer import Tokenizer
 from src.models.tokenizer.nets import Normalize
 from src.models.world_model import WorldModel
-from src.utils import compute_lambda_returns, LossWithIntermediateLosses
+from src.utils import compute_lambda_returns, LossWithIntermediateLosses, ActionTokenizer
 
 
 @dataclass
@@ -149,14 +149,20 @@ class Backbone(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, action_split, act_continuous_size, use_original_obs: bool = False,
-                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False, activation=nn.Mish()) -> None:
+    def __init__(self, move_shot_anchors,
+                 act_continuous_size,
+                 act_lock=None,
+                 act_continuous_lock=None,
+                 use_original_obs: bool = False,
+                 checkpoint_backbone=False,
+                 checkpoint_lstm=False,
+                 fp16=False,
+                 activation=nn.Mish()) -> None:
         super().__init__()
         self.use_original_obs = use_original_obs
         self.checkpoint_backbone = checkpoint_backbone
         self.checkpoint_lstm = checkpoint_lstm
         self.fp16 = fp16
-        self.action_split = action_split
         self.activation = activation
 
         self.backbone = Backbone(activation=self.activation)
@@ -169,8 +175,11 @@ class ActorCritic(nn.Module):
 
         self.emb_norm = Normalize(in_channels=self.lstm_dim)
         self.emb_linear = nn.Linear(self.emb_dim + self.lstm_dim, self.lstm_dim)
-        self.act_vocab_size = sum(self.action_split)
+        self.act_tokenizer = ActionTokenizer(move_shot_anchors=move_shot_anchors)
+        self.act_vocab_size = self.act_tokenizer.n_actions
         self.act_continuous_size = act_continuous_size
+        self.act_lock = act_lock
+        self.act_continuous_lock = act_continuous_lock
         self.actor_head = nn.Sequential(
             nn.Linear(self.lstm_dim, 128),
             Normalize(128), self.activation,
@@ -288,43 +297,41 @@ class ActorCritic(nn.Module):
             return ActorCriticOutput(logits_actions, mean_continuous, std_continuous, means_values)
 
     def sample_actions(self, out: ActorCriticOutput, eps=0.01):
-        # TODO normalize by max entropy log(n_actions)
-        logits_per_action_type = out.logits_actions.split(self.action_split, dim=-1)
-        actions = []
-        for logit in logits_per_action_type:
-            if logit.size(-1) == 1:
-                d = Bernoulli(logits=logit)
-                action = d.sample()
-                if torch.rand(1) < eps:
-                    action = torch.randint(0, 2, size=action.shape, device=logit.device)
-            else:
-                d = Categorical(logits=logit.unsqueeze(1))
-                action = d.sample()
-                if torch.rand(1) < eps:
-                    action = torch.randint(0, logit.size(-1), size=action.shape, device=logit.device)
+        d = Categorical(logits=out.logits_actions.unsqueeze(1))
+        action = d.sample()
+        if torch.rand(1) < eps:
+            action = torch.randint(0, out.logits_actions.size(-1),
+                                   size=action.shape, device=out.logits_actions.device)
 
-            actions.append(action)
         d_cont = Normal(out.mean_continuous, out.std_continuous)
-        return torch.cat(actions, dim=-1), d_cont.rsample()
+        action_cont = d_cont.rsample()
 
-    def get_proba_entropy(self, out: ImagineOutput):
-        logits_per_action_type = out.logits_actions.split(self.action_split, dim=-1)
-        action_per_type = out.actions.split(1, dim=-1)
-        log_probs, entropies = [], []
-        for logit, action in zip(logits_per_action_type, action_per_type):
-            if logit.size(-1) == 1:
-                d = Bernoulli(logits=logit)
-            else:
-                d = Categorical(logits=logit[:, :, None, :])
-            log_probs.append(d.log_prob(action[:, :]))
-            entropies.append(d.entropy())
-        d_cont = Normal(out.continuous_means, out.continuous_stds)
-        return (torch.cat(log_probs, dim=-1), torch.cat(entropies, dim=-1)), \
-            (d_cont.log_prob(out.actions_continuous), d_cont.entropy())
+        def _lock_one(act_token: int):
+            factorized = self.act_tokenizer.split_into_bins(act_token)
+            assert len(factorized) == len(self.act_lock)
+            for i in range(len(factorized)):
+                if self.act_lock[i] is not None:
+                    factorized[i] = self.act_lock[i]
+            return self.act_tokenizer.create_action_token(*factorized)
+
+        if self.act_lock is not None:
+            action.apply_(_lock_one)
+        if self.act_continuous_lock is not None:
+            mask = torch.tensor([i is not None for i in self.act_continuous_lock])
+            action_cont = torch.where(mask, torch.tensor(self.act_continuous_lock), action_cont)
+        return action, action_cont
+
+    @staticmethod
+    def get_proba_entropy(out: ImagineOutput):
+        d = Categorical(logits=out.logits_actions[:, :-1])
+        prob = d.log_prob(out.actions[:, :-1])
+        ent = d.entropy()
+        d_cont = Normal(out.continuous_means[:, :-1], out.continuous_stds[:, :-1])
+        return (prob, ent), (d_cont.log_prob(out.actions_continuous[:, :-1]), d_cont.entropy())
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, world_model: WorldModel, imagine_horizon: int,
-                     gamma: float, lambda_: float, entropy_weight: float, **kwargs: Any) -> LossWithIntermediateLosses:
-        if not self.use_original_obs:
+                     gamma: float, lambda_: float, entropy_weight: float, should_imagine=True, **kwargs: Any):
+        if not self.use_original_obs and should_imagine:
             outputs = self.imagine(batch, tokenizer, world_model, horizon=imagine_horizon)
         else:
             outputs = self.recall(batch, imagine_horizon)
@@ -339,26 +346,38 @@ class ActorCritic(nn.Module):
             )[:, :-1]
 
         values = outputs.values[:, :-1]
-
-        d = Categorical(logits=outputs.logits_actions[:, :-1])
-        log_probs = d.log_prob(outputs.actions[:, :-1])
+        advantages = lambda_returns - values.detach()
+        (log_probs, entropy), (log_probs_continuous, entropy_continuous) = self.get_proba_entropy(outputs)
         loss_actions = -1 * (
-                log_probs * (lambda_returns - values.detach())).mean()
+                log_probs * advantages).mean()
 
-        cont = Normal(outputs.continuous_means[:, :-1], outputs.continuous_stds[:, :-1])
-        log_probs_continuous = cont.log_prob(outputs.actions_continuous[:, :-1])  # (B, T, #act_cont)
         loss_continuous_actions = -1 * (
-                log_probs_continuous * (lambda_returns - values.detach()).unsqueeze(-1)).mean()
+                log_probs_continuous * advantages.unsqueeze(-1)).mean()
 
-        loss_entropy = - entropy_weight * d.entropy().mean()
-        loss_entropy_continuous = - entropy_weight * cont.entropy().mean()
+        loss_entropy = - entropy_weight * entropy.mean()
+        loss_entropy_continuous = - entropy_weight * entropy_continuous.mean()
         loss_values = F.mse_loss(values, lambda_returns)
 
-        return LossWithIntermediateLosses(loss_actions=loss_actions,
-                                          loss_continuous_actions=loss_continuous_actions,
+        return LossWithIntermediateLosses(
+                                          # losses
+                                          loss_actions=loss_actions,
+                                          # loss_continuous_actions=loss_continuous_actions,
                                           loss_values=loss_values,
                                           loss_entropy=loss_entropy,
-                                          loss_entropy_continuous=loss_entropy_continuous)
+                                          # loss_entropy_continuous=loss_entropy_continuous,
+
+                                          # metrics
+                                          values_mean=values.mean().detach(),
+                                          advantage_mean=advantages.mean().detach(),
+                                          custom_actions=torch.where(
+                                            advantages >= 0,
+                                            -log_probs,
+                                            -torch.log(1 - torch.exp(log_probs))).mean().detach(),
+                                          custom_actions_weighted=torch.where(
+                                            advantages >= 0,
+                                            -log_probs*advantages,
+                                            advantages*torch.log(1 - torch.exp(log_probs))).mean().detach()
+                                          ), outputs
 
     def imagine(self, batch: Batch, tokenizer: Tokenizer, world_model: WorldModel, horizon: int,
                 show_pbar: bool = False) -> ImagineOutput:
@@ -394,11 +413,12 @@ class ActorCritic(nn.Module):
             action_token = Categorical(
                 logits=outputs_ac.logits_actions).sample()
 
-            action_continuous = F.sigmoid(Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample())
+            action_continuous = Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample()
             obs, reward, done, _ = wm_env.step(action_token,
                                                continuous=action_continuous,
                                                should_predict_next_obs=(k < horizon - 1))
-
+            if done:  # lambda returns zeroes last step rewards
+                all_rewards[-1] += reward
             all_actions.append(action_token)
             all_continuous.append(action_continuous)
             all_logits_actions.append(outputs_ac.logits_actions)
@@ -419,7 +439,7 @@ class ActorCritic(nn.Module):
             continuous_stds=torch.cat(all_continuous_stds, dim=1),  # (B, T, #actions)
             values=rearrange(torch.cat(all_values, dim=1), 'b t 1 -> b t'),  # (B, T)
             rewards=torch.cat(all_rewards, dim=1).to(device),  # (B, T)
-            ends=torch.cat(all_ends, dim=1).to(device),  # (B, T)
+            ends=torch.cumsum(torch.cat(all_ends, dim=1), dim=-1).bool().to(device),  # (B, T)  propagate end
         )
 
     def recall(self, batch: Batch, horizon: int, show_pbar: bool = False):
@@ -454,7 +474,7 @@ class ActorCritic(nn.Module):
             action = batch['actions'][:, k]
             continuous = batch['actions_continuous'][:, k]
 
-            all_actions.append(action)
+            all_actions.append(action.reshape(-1, 1))
             all_continuous.append(continuous.unsqueeze(1))
             all_logits_actions.append(outputs_ac.logits_actions)
             all_continuous_means.append(outputs_ac.mean_continuous)
@@ -464,9 +484,6 @@ class ActorCritic(nn.Module):
             all_ends.append(torch.tensor(done).reshape(-1, 1))
 
         self.clear()
-
-        # copy reward in the second to last step
-        all_rewards[-2] = all_rewards[-1].clone()
 
         return ImagineOutput(
             observations=torch.stack(all_observations, dim=1).mul(255).byte(),  # (B, T, C, H, W) in [0, 255]
@@ -574,15 +591,8 @@ class ConvLSTMCell(nn.Module):
 
 class ConvActorCritic(ActorCritic):
 
-    def __init__(self, action_split, act_continuous_size, use_original_obs: bool = False,
-                 checkpoint_backbone=False, checkpoint_lstm=False, fp16=False, activation=nn.Mish()):
-        super(ActorCritic, self).__init__()
-        self.use_original_obs = use_original_obs
-        self.checkpoint_backbone = checkpoint_backbone
-        self.checkpoint_lstm = checkpoint_lstm
-        self.fp16 = fp16
-        self.action_split = list(action_split)
-        self.activation = activation
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         self.backbone = Backbone(channels=[3, 32, 64, 64, 128, 128, 128],
                                  pools=[2, 2, 2, 2, 2, 1], activation=self.activation)  # output.shape = (B, 128, 6, 6)
@@ -594,8 +604,6 @@ class ConvActorCritic(ActorCritic):
         self.hx, self.cx = None, None
         self.emb_norm = Normalize(self.lstm_dim)
 
-        self.act_vocab_size = sum(self.action_split)
-        self.act_continuous_size = act_continuous_size
         self.actor_head = nn.Sequential(
             nn.Conv2d(self.emb_dim + self.lstm_dim, self.lstm_dim, 3),
             Normalize(self.lstm_dim), self.activation,

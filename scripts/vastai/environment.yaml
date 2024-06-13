@@ -11,69 +11,69 @@ dependencies:
     - AutoROM.accept-rom-license==0.6.1
     - bcrypt==4.1.1
     - boto3==1.26.165
-    -  botocore==1.29.165
-    -  certifi==2023.11.17
-    -  cffi==1.16.0
-    -  charset-normalizer==3.3.2
-    -  click==8.1.7
-    -  cloudpickle==3.0.0
-    -  colorama==0.4.6
-    -  configparser==6.0.0
-    -  contourpy==1.1.1
-    -  cryptography==41.0.7
-    -  cycler==0.12.1
-    -  docker-pycreds==0.4.0
-    -  einops==0.3.2
-    -  fonttools==4.46.0
-    -  gitdb==4.0.11
-    -  GitPython==3.1.40
-    -  gym==0.25.0
-    -  hydra-core==1.1.1
-    -  idna==3.6
-    -  importlib-metadata==6.8.0
-    -  importlib-resources==6.1.1
-    -  jmespath==1.0.1
-    -  keyboard==0.13.5
-    -  kiwisolver==1.4.5
-    -  matplotlib==3.7.4
-    -  mouse==0.7.1
-    -  numpy==1.24.2
-    -  omegaconf==2.1.2
-    -  opencv-python==4.5.5.64
-    -  packaging==23.2
-    -  paramiko==3.2.0
-    -  pathtools==0.1.2
-    -  Pillow==9.4.0
-    -  plotly==5.18.0
-    -  promise==2.3
-    -  protobuf==3.20.3
-    -  psutil==5.8.0
-    -  pycparser==2.21
-    -  pyefd==1.6.0
-    -  pygame==2.1.2
-    -  PyNaCl==1.5.0
-    -  pyparsing==3.1.1
+    - botocore==1.29.165
+    - certifi==2023.11.17
+    - cffi==1.16.0
+    - charset-normalizer==3.3.2
+    - click==8.1.7
+    - cloudpickle==3.0.0
+    - colorama==0.4.6
+    - configparser==6.0.0
+    - contourpy==1.1.1
+    - cryptography==41.0.7
+    - cycler==0.12.1
+    - docker-pycreds==0.4.0
+    - einops==0.3.2
+    - fonttools==4.46.0
+    - gitdb==4.0.11
+    - GitPython==3.1.40
+    - gym==0.25.0
+    - hydra-core==1.1.1
+    - idna==3.6
+    - importlib-metadata==6.8.0
+    - importlib-resources==6.1.1
+    - jmespath==1.0.1
+    - keyboard==0.13.5
+    - kiwisolver==1.4.5
+    - matplotlib==3.7.4
+    - mouse==0.7.1
+    - numpy==1.24.2
+    - omegaconf==2.1.2
+    - opencv-python==4.5.5.64
+    - packaging==23.2
+    - paramiko==3.2.0
+    - pathtools==0.1.2
+    - Pillow==9.4.0
+    - plotly==5.18.0
+    - promise==2.3
+    - protobuf==3.20.3
+    - psutil==5.8.0
+    - pycparser==2.21
+    - pyefd==1.6.0
+    - pygame==2.1.2
+    - PyNaCl==1.5.0
+    - pyparsing==3.1.1
 #    -  pypiwin32==223
-    -  python-dateutil==2.8.2
+    - python-dateutil==2.8.2
 #    -  pywin32==306
-    -  PyYAML==6.0.1
-    -  requests==2.31.0
-    -  s3transfer==0.6.2
+    - PyYAML==6.0.1
+    - requests==2.31.0
+    - s3transfer==0.6.2
     - scikit-learn
-    -  sentry-sdk==1.38.0
-    -  shortuuid==1.0.11
-    -  six==1.16.0
-    -  smmap==5.0.1
-    -  subprocess32==3.5.4
-    -  tenacity==8.2.3
-    -  termcolor==2.3.0
-    -  timm==0.4.12
-    - --extra-index-url https://download.pytorch.org/whl/cu113
-    - torch==1.12.1+cu113
-    - torchvision==0.13.1+cu113
+    - sentry-sdk==1.38.0
+    - shortuuid==1.0.11
+    - six==1.16.0
+    - smmap==5.0.1
+    - subprocess32==3.5.4
+    - tenacity==8.2.3
+    - termcolor==2.3.0
+    - timm==0.4.12
+    - --extra-index-url https://download.pytorch.org/whl/cu118
+    - torch==2.3.1+cu118
+    - torchvision==0.18.1+cu118
     - tqdm==4.62.3
     - typing_extensions==4.8.0
     - urllib3==1.26.18
-    - wandb==0.12.7
+    - wandb==0.17.0
     - yaspin==2.5.0
     - zipp==3.17.0

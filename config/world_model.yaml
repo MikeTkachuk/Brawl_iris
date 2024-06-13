@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "wm_v2"
+  name: "w_decay"
   group: null
   tags: []
   notes: ""
@@ -58,7 +58,7 @@ training:
     start_after_epochs: 99999
     steps_per_epoch: 200
   world_model:
-    batch_num_samples: 10 # rtx3090
+    batch_num_samples: 30 # rtx3090
     grad_acc_steps: 1
     agc_lambda: 0.1
     max_grad_norm: 10.0

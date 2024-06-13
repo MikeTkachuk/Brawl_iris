@@ -66,6 +66,7 @@ def show_video(frames, fps=1, annotate=False, captions=None, tokenize=True):
         break_func()
         if cv.waitKey(25):
             pass
+    time.sleep(10)
     cv.destroyAllWindows()
 
 
@@ -118,8 +119,9 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=float, default=2)
     args = parser.parse_args()
 
-    ep = torch.load(args.path)
+    ep = torch.load(args.path, map_location="cpu")
     move_directions = ["right", "up", "left", "down"]
-    show_video(ep["observations"].permute(0, 2, 3, 1).numpy(),
-               captions=[move_directions[a[-2]] if a[0] else "No action" for a in ep["actions"]],
+    show_video(ep["observations"].permute(0, 2, 3, 1).numpy()[-10:],
+               # captions=[move_directions[a[-2]] if a[0] else "No action" for a in ep["actions"]],
+               tokenize=False,
                fps=args.fps)

@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "wm_v2"
+  name: "imagine"
   group: null
   tags: []
   notes: ""
@@ -67,7 +67,7 @@ training:
     steps_per_epoch: 200
   actor_critic:
     start_after_epochs: 0
-    batch_num_samples: 32
+    batch_num_samples: 16
     grad_acc_steps: 1
     collection_steps: 1
     join_collection: False

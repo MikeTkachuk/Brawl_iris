@@ -38,7 +38,7 @@ def custom_setup(cfg):
                **cfg.wandb)
 
 
-@hydra.main(config_path="../../config", config_name="trainer")
+@hydra.main(config_path="../../config", config_name="tokenizer")
 def main(cfg):
     # todo: increase loss contrast (abs(l)^3 / 3 loss)
     # todo: (?) add different maps. tok overfits to patch distribution of single map

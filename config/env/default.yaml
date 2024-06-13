@@ -20,3 +20,5 @@ test:
   #clip_reward: False
 
 #keymap: atari/${.train.id}
+reward_map: [-100, -50, -30, 0, 25, 100]
+reward_divisor: 100

@@ -21,11 +21,12 @@ class Episode:
     mask_padding: torch.BoolTensor
     weight: float = 0.0
     reward: float = None
+    should_clip_end: bool = True
 
     def __post_init__(self):
         assert len(self.observations) == len(self.actions) == len(self.actions_continuous) \
                == len(self.rewards) == len(self.ends) == len(self.mask_padding)
-        if self.ends.sum() > 0:
+        if self.ends.sum() > 0 and self.should_clip_end:
             idx_end = torch.argmax(self.ends) + 1
             self.observations = self.observations[:idx_end]
             self.actions = self.actions[:idx_end]
@@ -45,6 +46,7 @@ class Episode:
             torch.cat((self.rewards, other.rewards), dim=0),
             torch.cat((self.ends, other.ends), dim=0),
             torch.cat((self.mask_padding, other.mask_padding), dim=0),
+            should_clip_end=self.should_clip_end
         )
 
     def segment(self, start: int, stop: int, should_pad: bool = False) -> Episode:
@@ -68,6 +70,7 @@ class Episode:
             self.rewards[start:stop],
             self.ends[start:stop],
             self.mask_padding[start:stop],
+            should_clip_end=self.should_clip_end
         )
 
         segment.observations = pad(segment.observations)

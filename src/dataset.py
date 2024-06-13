@@ -42,9 +42,9 @@ class _Dataset(Dataset):
 
 def _tokenizer_preprocess_helper(ep_id, episode_dir, resolution, preprocessed_dir):
     episode = Episode(**torch.load(episode_dir / f'{ep_id}.pt'))
-    observations = episode.observations / 255.0
+    observations = episode.observations
     observations = torch.nn.functional.interpolate(observations, (resolution, resolution),
-                                                   mode='bilinear')
+                                                   mode='bilinear') / 255.0
     op_flow = torch.diff(observations, dim=0).abs()
     weights = gaussian_blur(op_flow, 5).max(dim=-3)[0]
     weights = weights + 1 - weights.mean()
@@ -318,7 +318,7 @@ class EpisodesDataset:
                     if resolution is not None and not torch.all(
                             torch.tensor(e_s_obs.shape[-2:]) == resolution):
                         e_s_obs = torch.nn.functional.interpolate(e_s_obs, (resolution, resolution),
-                                                                  mode='nearest')  # torch 2.1 supports uint8 bilinear
+                                                                  mode='bilinear')  # torch 2.1 supports uint8 bilinear
                     observations.append(e_s_obs)
                 batch['observations'] = torch.stack(observations).float() / 255.0  # int8 to float and scale
             elif isinstance(episodes_segments[0][k], torch.Tensor):

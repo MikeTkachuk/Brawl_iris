@@ -92,7 +92,8 @@ class MaskedDropout(nn.Module):
                 x = x.clone()
             x[..., loc_samples[:, 0], loc_samples[:, 1]] = 0
             frac_affected = loc_pool.size(1) / mask.numel()
-            x /= 1 - self.p * frac_affected
+            if x.dtype != torch.bool:
+                x /= 1 - self.p * frac_affected
 
         return x
 
@@ -113,7 +114,7 @@ class SelfAttention(nn.Module):
         causal_mask = torch.tril(torch.ones(config.max_tokens, config.max_tokens))
         block_causal_mask = torch.max(causal_mask, torch.block_diag(
             *[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
-        self.register_buffer('mask', causal_mask if config.attention == 'causal' else block_causal_mask)
+        self.register_buffer('mask', causal_mask.bool() if config.attention == 'causal' else block_causal_mask.bool())
         # drop obvious previous frames, leave actions
         self.precise_attn_drop = MaskedDropout(config.last_frames_pdrop, inplace=False)
         precise_drop_mask = torch.zeros(config.max_tokens, config.max_tokens)
@@ -142,15 +143,13 @@ class SelfAttention(nn.Module):
             kv_cache.update(k, v)
             k, v = kv_cache.get()
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         context_mask = self.mask[L:L + T, :L + T]
         context_mask = self.precise_attn_drop(context_mask, self.precise_attn_drop_mask[L:L + T, :L + T])
-        att = att.masked_fill(context_mask == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_drop(att)
-        y = att @ v
-        y = rearrange(y, 'b h t e -> b t (h e)')
+        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION]):
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=context_mask,
+                                                                 dropout_p=self.attn_drop.p if self.training else 0.0)
 
+        y = rearrange(y, 'b h t e -> b t (h e)')
         y = self.resid_drop(self.proj(y))
 
         return y

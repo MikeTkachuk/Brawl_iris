@@ -100,7 +100,8 @@ class WorldModelEnv:
             output_sequence.append(outputs_wm.output_sequence)
 
             if k == 0:
-                reward = Categorical(logits=outputs_wm.logits_rewards/self.temperature).sample().float().cpu().numpy().reshape(-1) - 1   # (B,)
+                reward = Categorical(logits=outputs_wm.logits_rewards/self.temperature).sample()
+                reward = self.world_model.decode_rewards(reward).float().cpu().numpy().reshape(-1)   # (B,)
                 done = Categorical(logits=outputs_wm.logits_ends/self.temperature).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
 
             if k < self.num_observations_tokens:

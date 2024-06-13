@@ -24,12 +24,15 @@ class WorldModelOutput:
 
 class WorldModel(nn.Module):
     def __init__(self, obs_vocab_size: int, act_vocab_size: int, config: TransformerConfig,
-                 act_continuous_size: int) -> None:
+                 act_continuous_size: int, reward_map: list, reward_divisor: int) -> None:
         super().__init__()
         self.obs_vocab_size, self.act_vocab_size = obs_vocab_size, act_vocab_size
         self.config = config
         self.transformer = Transformer(config)
         self.act_continuous_size = act_continuous_size
+        self.rewards_map = dict(zip(reward_map, range(len(reward_map))))
+        self.reward_list = torch.tensor(reward_map)
+        self.reward_divisor = reward_divisor
 
         all_but_last_obs_tokens_pattern = torch.ones(config.tokens_per_block)
         all_but_last_obs_tokens_pattern[-2] = 0
@@ -65,7 +68,7 @@ class WorldModel(nn.Module):
             head_module=nn.Sequential(
                 nn.Linear(config.embed_dim, config.embed_dim),
                 nn.ReLU(),
-                nn.Linear(config.embed_dim, 3)
+                nn.Linear(config.embed_dim, len(self.reward_list))
             )
         )
 
@@ -83,6 +86,17 @@ class WorldModel(nn.Module):
 
     def __repr__(self) -> str:
         return "world_model"
+
+    def encode_rewards(self, rewards):
+
+        def _mapper(x):
+            x = round(x * self.reward_divisor)
+            return self.rewards_map[x]
+
+        return rewards.to("cpu").apply_(_mapper).to(rewards.device)
+
+    def decode_rewards(self, rewards):
+        return self.reward_list[rewards.to("cpu")].to(rewards.device) / self.reward_divisor
 
     def forward(self, tokens: torch.LongTensor, past_keys_values: Optional[KeysValues] = None,
                 continuous=None) -> WorldModelOutput:
@@ -115,23 +129,26 @@ class WorldModel(nn.Module):
 
         labels_observations, labels_rewards, labels_ends = self.compute_labels_world_model(obs_tokens, batch['rewards'],
                                                                                            batch['ends'],
-                                                                                           batch['mask_padding'])
+                                                                                           batch['mask_padding'],
+                                                                                           )
 
         logits_observations = rearrange(outputs.logits_observations[:, :-1], 'b t o -> (b t) o')
         loss_obs = F.cross_entropy(logits_observations, labels_observations)
-        loss_rewards = F.cross_entropy(rearrange(outputs.logits_rewards, 'b t e -> (b t) e'), labels_rewards)
-        loss_ends = F.cross_entropy(rearrange(outputs.logits_ends, 'b t e -> (b t) e'), labels_ends)
+        loss_rewards = F.cross_entropy(rearrange(outputs.logits_rewards, 'b t e -> (b t) e'), labels_rewards, reduction="none")
+        loss_rewards = (loss_rewards * (1 - (-loss_rewards).exp()).pow(2)).mean()
+        loss_ends = F.cross_entropy(rearrange(outputs.logits_ends, 'b t e -> (b t) e'), labels_ends, reduction="none")
+        loss_ends = (loss_ends * (1 - (-loss_ends).exp()).pow(2)).mean()
 
-        return LossWithIntermediateLosses(loss_obs=loss_obs, loss_rewards=loss_rewards, loss_ends=loss_ends)
+        return LossWithIntermediateLosses(loss_obs=loss_obs, loss_rewards=loss_rewards.mean(), loss_ends=loss_ends.mean())
 
     def compute_labels_world_model(self, obs_tokens: torch.Tensor, rewards: torch.Tensor, ends: torch.Tensor,
                                    mask_padding: torch.BoolTensor) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor]:
+            torch.Tensor, torch.Tensor, torch.Tensor]:
         assert torch.all(ends.sum(dim=1) <= 1)  # at most 1 done
         mask_fill = torch.logical_not(mask_padding)  # to be filled with -100 (default ignore index in F.cross_entropy)
         labels_observations = rearrange(obs_tokens.masked_fill(mask_fill.unsqueeze(-1).expand_as(obs_tokens), -100),
                                         'b t k -> b (t k)')[:, 1:]
         # TODO make more bins for rewards
-        labels_rewards = (rewards.sign() + 1).masked_fill(mask_fill, -100).long()  # Rewards clipped to {-1, 0, 1}
+        labels_rewards = self.encode_rewards(rewards).masked_fill(mask_fill, -100).long()  # Rewards clipped to {-1, 0, 1}
         labels_ends = ends.masked_fill(mask_fill, -100)
         return labels_observations.reshape(-1), labels_rewards.reshape(-1), labels_ends.reshape(-1)
