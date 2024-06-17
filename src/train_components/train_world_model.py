@@ -137,7 +137,7 @@ def main(cfg):
                                      weight_decay=cfg.training.world_model.weight_decay)
 
         # load checkpoint
-        # world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\last.pt", map_location=device))
+        # world_model.load_state_dict(state_dict, strict=False)
         # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\optimizer.pt", map_location=device))
 
         dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset.pt")
@@ -197,7 +197,7 @@ def main_ac_head(cfg):
 
 
 @torch.no_grad()
-def explore_world_model(checkpoint_path=None, max_context=None, context_shift=False):
+def explore_world_model(checkpoint_path=None):
     from src.envs.world_model_env import WorldModelEnv
     wm_checkpoint_path = checkpoint_path or Path(
         r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt")
@@ -213,8 +213,6 @@ def explore_world_model(checkpoint_path=None, max_context=None, context_shift=Fa
     action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
     world_model = WorldModel(obs_vocab_size=tokenizer.vocab_size, act_vocab_size=action_tokenizer.n_actions,
                              act_continuous_size=3,
-                             config=instantiate(cfg.world_model)).to(device).eval()
-    world_model.load_state_dict(torch.load(wm_checkpoint_path, map_location=device), strict=False)
                              config=instantiate(cfg.world_model),
                              reward_map=cfg.env.reward_map,
                              reward_divisor=cfg.env.reward_divisor
@@ -246,8 +244,7 @@ def explore_world_model(checkpoint_path=None, max_context=None, context_shift=Fa
             make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor
         )
         tok_b = wm_env.obs_tokens.reshape(12, 12)
-        out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength], context_shift=context_shift,
-                          max_context=max_context)
+        out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength])
         to_print = np.array_str(wm_env.obs_probas.reshape(12, 12).cpu().numpy(), precision=2, suppress_small=True)
         print(tok_b)
         return out
@@ -360,16 +357,9 @@ if __name__ == "__main__":
     # todo: Bert style pretraining (maybe extra attention to action tokens)
     # todo: eval with decoder, log tokenizer losses
     # todo: sequence gan loss for distribution matching
-    # ep = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\dataset\43.pt")
-    # observations = ep["observations"]
-    # import matplotlib.pyplot as plt
-    # for i in range(1, len(ep["ends"])):
-    #     img = torch.cat([observations[i-1], observations[i]], dim=-1).permute(1,2,0).numpy()
-    #     plt.imshow(img)
-    #     plt.title(ep["actions"][i-1])
-    #     plt.show()
+
     # generate_token_dataset()
     # main()
     explore_world_model(
-        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\w_decay\2024-06-11_09-58-03\checkpoints\last.pt",
+        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\12_new_head\2024-06-16_11-02-44\checkpoints\last.pt",
         max_context=None)

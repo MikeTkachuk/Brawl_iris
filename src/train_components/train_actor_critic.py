@@ -32,10 +32,10 @@ device = "cuda"
 
 
 class SegmentDataset:
-    def __init__(self, batch_size, save_dir=Path("./checkpoints/imagined"), max_len=15000):
+    def __init__(self, batch_size, save_dir=Path("./checkpoints/imagined"), max_cache=15000):
         self.batch_size = batch_size
         self.save_dir = save_dir
-        self.max_len = max_len
+        self.max_len = max_cache
         if not self.save_dir.exists():
             self.save_dir.mkdir(parents=True)
 
@@ -143,14 +143,15 @@ def main(cfg):
                                  reward_map=cfg.env.reward_map,
                                  reward_divisor=cfg.env.reward_divisor
                                  ).to(device).eval()
-        world_model.load_state_dict(torch.load(Path(SOURCE_ROOT) / "input_artifacts/world_model.pt"))
+        # world_model.load_state_dict(torch.load(Path(SOURCE_ROOT) / "input_artifacts/world_model.pt"))
+        world_model.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\12_new_head\2024-06-15_21-53-48\checkpoints\last.pt"))
         cfg.actor_critic.use_original_obs = False
         actor_critic: ConvActorCritic = instantiate(cfg.actor_critic).to(device).train()
         optimizer = torch.optim.Adam(actor_critic.parameters(),
                                      lr=cfg.training.learning_rate)
 
         train_dataset, eval_dataset = get_dataset_split(cfg)
-        imagined_dataset = SegmentDataset(cfg.training.actor_critic.batch_num_samples, max_len=15000)  # ~20GB max
+        imagined_dataset = SegmentDataset(cfg.training.actor_critic.batch_num_samples, max_cache=15000)  # ~20GB max
         custom_setup(cfg)
 
         to_log = {}

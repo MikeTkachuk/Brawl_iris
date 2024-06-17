@@ -18,7 +18,6 @@ from .kv_caching import KeysValues, KVCache
 class TransformerConfig:
     tokens_per_block: int
     max_blocks: int
-    attention: str
 
     num_layers: int
     num_heads: int
@@ -30,6 +29,8 @@ class TransformerConfig:
 
     n_last_frames_drop: int = 0
     last_frames_pdrop: float = 0.0
+
+    n_gen_heads: int = 1
 
     @property
     def max_tokens(self):
@@ -102,7 +103,6 @@ class SelfAttention(nn.Module):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
         assert config.embed_dim % config.num_heads == 0
-        assert config.attention in ('causal', 'block_causal')
         self.num_heads = config.num_heads
         self.key = nn.Linear(config.embed_dim, config.embed_dim)
         self.query = nn.Linear(config.embed_dim, config.embed_dim)
@@ -111,10 +111,9 @@ class SelfAttention(nn.Module):
         self.resid_drop = nn.Dropout(config.resid_pdrop)
         self.proj = nn.Linear(config.embed_dim, config.embed_dim)
 
-        causal_mask = torch.tril(torch.ones(config.max_tokens, config.max_tokens))
-        block_causal_mask = torch.max(causal_mask, torch.block_diag(
-            *[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
-        self.register_buffer('mask', causal_mask.bool() if config.attention == 'causal' else block_causal_mask.bool())
+        mask = torch.tril(torch.ones(config.max_tokens, config.max_tokens)).bool()
+
+        self.register_buffer('mask', mask)
         # drop obvious previous frames, leave actions
         self.precise_attn_drop = MaskedDropout(config.last_frames_pdrop, inplace=False)
         precise_drop_mask = torch.zeros(config.max_tokens, config.max_tokens)

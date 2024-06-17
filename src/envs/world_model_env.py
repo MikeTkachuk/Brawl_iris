@@ -55,40 +55,27 @@ class WorldModelEnv:
         return outputs_wm.output_sequence  # (B, K, E)
 
     @torch.no_grad()
-    def step(self, action: Union[int, np.ndarray, torch.LongTensor],
-             continuous=None,
-             should_predict_next_obs: bool = True,
-             context_shift=False,
-             max_context=None):
+    def step(self, action: Union[int, torch.LongTensor],
+             continuous=None):
         """
 
         :param action:
         :param continuous:
-        :param should_predict_next_obs:
-        :param context_shift: if True, once context window is filled removes the first block from context,
-         otherwise resets whole context. # TODO: has bug as it does not regard pos emb shift
-        :param max_context: optional int > 0. The max number of blocks in context. Default - config.max_blocks
         :return:
         """
-        if max_context is None:
-            max_context = self.world_model.config.max_tokens
-        else:
-            assert isinstance(max_context, int) and max_context > 0
-            max_context = max_context * self.world_model.config.tokens_per_block
+        max_context = self.world_model.config.max_tokens
         assert self.keys_values_wm is not None and self.num_observations_tokens is not None
-
-        num_passes = 1 + self.num_observations_tokens if should_predict_next_obs else 1
+        num_heads = self.world_model.config.n_gen_heads
+        assert self.num_observations_tokens % num_heads == 0
+        num_passes = self.num_observations_tokens // num_heads
 
         output_sequence, obs_tokens, obs_probas = [], [], []
 
         if self.keys_values_wm.size + num_passes > max_context:
-            if context_shift:
-                self.keys_values_wm.prune_context(np.arange(self.keys_values_wm.size) >= self.world_model.config.tokens_per_block)
-            else:
-                _ = self.refresh_keys_values_with_initial_obs_tokens(self.obs_tokens)
+            _ = self.refresh_keys_values_with_initial_obs_tokens(self.obs_tokens)
 
-        token = action.clone().detach() if isinstance(action, torch.Tensor) else torch.tensor(action, dtype=torch.long)
-        token = token.reshape(-1, 1).to(self.device)  # (B, 1)
+        tokens = action.clone().detach() if isinstance(action, torch.Tensor) else torch.tensor(action, dtype=torch.long)
+        tokens = tokens.reshape(-1, 1).to(self.device)  # (B, 1)
         if continuous is not None:
             continuous = continuous.clone().detach() if isinstance(continuous, torch.Tensor) else torch.tensor(continuous,
                                                                                                   dtype=torch.float)
@@ -96,23 +83,24 @@ class WorldModelEnv:
 
         for k in range(num_passes):  # assumption that there is only one action token.
 
-            outputs_wm = self.world_model(token, past_keys_values=self.keys_values_wm, continuous=continuous)
+            outputs_wm = self.world_model(tokens, past_keys_values=self.keys_values_wm, continuous=continuous)
             output_sequence.append(outputs_wm.output_sequence)
 
-            if k == 0:
-                reward = Categorical(logits=outputs_wm.logits_rewards/self.temperature).sample()
-                reward = self.world_model.decode_rewards(reward).float().cpu().numpy().reshape(-1)   # (B,)
-                done = Categorical(logits=outputs_wm.logits_ends/self.temperature).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
+            token_dist = Categorical(logits=outputs_wm.logits_observations/self.temperature)
+            tokens = token_dist.sample()
+            obs_tokens.append(tokens)
+            obs_probas.append(token_dist.log_prob(tokens))
 
-            if k < self.num_observations_tokens:
-                token_dist = Categorical(logits=outputs_wm.logits_observations/self.temperature)
-                token = token_dist.sample()
-                obs_tokens.append(token)
-                obs_probas.append(token_dist.log_prob(token))
+        # add last tokens to context
+        outputs_wm = self.world_model(tokens, past_keys_values=self.keys_values_wm, continuous=continuous)
+        reward = Categorical(logits=outputs_wm.logits_rewards / self.temperature).sample()
+        reward = self.world_model.decode_rewards(reward).float().cpu().numpy().reshape(-1)  # (B,)
+        done = Categorical(logits=outputs_wm.logits_ends / self.temperature).sample().cpu().numpy().astype(
+            bool).reshape(-1)  # (B,)
 
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
         self.obs_probas = torch.cat(obs_probas, dim=1)
-        obs = self.decode_obs_tokens() if should_predict_next_obs else None
+        obs = self.decode_obs_tokens()
         return obs, reward, done, None
 
     @torch.no_grad()

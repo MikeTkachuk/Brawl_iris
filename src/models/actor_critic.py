@@ -415,18 +415,20 @@ class ActorCritic(nn.Module):
 
             action_continuous = Normal(outputs_ac.mean_continuous, outputs_ac.std_continuous).rsample()
             obs, reward, done, _ = wm_env.step(action_token,
-                                               continuous=action_continuous,
-                                               should_predict_next_obs=(k < horizon - 1))
-            if done:  # lambda returns zeroes last step rewards
-                all_rewards[-1] += reward
+                                               continuous=action_continuous)
+            reward = torch.tensor(reward).reshape(-1, 1)
+            done = torch.tensor(done).reshape(-1, 1)
+            # lambda_return zeroes last step rewards
+            if all_rewards:
+                all_rewards[-1][done] += reward[done]
             all_actions.append(action_token)
             all_continuous.append(action_continuous)
             all_logits_actions.append(outputs_ac.logits_actions)
             all_continuous_means.append(outputs_ac.mean_continuous)
             all_continuous_stds.append(outputs_ac.std_continuous)
             all_values.append(outputs_ac.means_values)
-            all_rewards.append(torch.tensor(reward).reshape(-1, 1))
-            all_ends.append(torch.tensor(done).reshape(-1, 1))
+            all_rewards.append(reward)
+            all_ends.append(done)
 
         self.clear()
 

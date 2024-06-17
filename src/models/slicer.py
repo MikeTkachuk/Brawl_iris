@@ -47,6 +47,8 @@ class Embedder(nn.Module):
         self.slicers = [Slicer(max_blocks, block_mask) for block_mask in block_masks]
         self.action_table_id = action_table_id
         self.continuous_size = continuous_size
+        self.continuous_map_size = self.embedding_dim // 32
+        self.continuous_map = torch.nn.Linear(self.continuous_size, self.continuous_map_size)
 
     def forward(self, tokens: torch.Tensor, num_steps: int, prev_steps: int, continuous: torch.Tensor = None) -> torch.Tensor:
         assert tokens.ndim == 2  # x is (B, T)
@@ -59,5 +61,6 @@ class Embedder(nn.Module):
                 assert continuous.shape[2] == self.continuous_size  # continuous is (B, size, actions)
                 assert continuous.shape[1] == len(s)
                 # fill last slots of embeddings with continuous values
-                output[:, s, self.embedding_dim-self.continuous_size:] = continuous
+                continuous = self.continuous_map(continuous)
+                output[:, s, -self.continuous_map_size:] = continuous
         return output
