@@ -1,0 +1,16 @@
+_target_: src.models.TransformerConfig
+tokens_per_block: 257
+max_blocks: 8
+num_layers: 4
+num_heads: 8
+embed_dim: 512
+embed_pdrop: 0.05
+resid_pdrop: 0.05
+attn_pdrop: 0.05
+
+n_last_frames_drop: 0
+last_frames_pdrop: 0.0
+
+n_gen_heads: 8
+
+# TODO add linear emb size for continuous

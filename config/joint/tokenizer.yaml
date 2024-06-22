@@ -1,0 +1,32 @@
+_target_: src.models.tokenizer.Tokenizer
+
+vocab_size: 256
+embed_dim: 256
+loss_weights: [0.05, 0.3, 1.0, 0.6, 0.1]  # commitment, l2, lpips, discr, gen
+gan_loss: False
+encoder:
+  _target_: src.models.tokenizer.Encoder
+  config:
+    _target_: src.models.tokenizer.EncoderDecoderConfig
+    resolution: 256
+    in_channels: 3
+    z_channels: 256
+    ch: 32
+    ch_mult: [1, 2, 3, 4]
+    num_res_blocks: 1
+    attn_resolutions: [32, 16]
+    out_ch: 3
+    dropout: 0.0
+decoder:
+  _target_: src.models.tokenizer.Decoder
+  config:
+    _target_: src.models.tokenizer.EncoderDecoderConfig
+    resolution: ${...encoder.config.resolution}
+    in_channels: ${...encoder.config.in_channels}
+    z_channels: ${...encoder.config.z_channels}
+    ch: 32
+    ch_mult: [1, 3, 6, 8]
+    num_res_blocks: 1
+    attn_resolutions: [32, 16]
+    out_ch: ${...encoder.config.out_ch}
+    dropout: 0.0

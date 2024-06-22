@@ -31,6 +31,7 @@ class Tokenizer(nn.Module):
                  with_lpips: bool = True, loss_weights=(1.0, 1.0, 1.0, 1.0, 1.0), gan_loss=False) -> None:
         super().__init__()
         self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
         self.encoder = encoder
         self.pre_quant_norm = Normalize(encoder.config.z_channels, num_groups=32)
         self.pre_quant_conv = torch.nn.Conv2d(encoder.config.z_channels,

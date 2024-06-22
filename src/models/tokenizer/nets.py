@@ -39,6 +39,7 @@ class Encoder(nn.Module):
                                      )
 
         curr_res = config.resolution // 2
+        attn_resolutions = list(config.attn_resolutions)
         in_ch_mult = (1,) + tuple(config.ch_mult)
         self.down = nn.ModuleList()
         for i_level in range(self.num_resolutions):
@@ -53,6 +54,10 @@ class Encoder(nn.Module):
                                          dropout=config.dropout))
                 block_in = block_out
                 if curr_res in config.attn_resolutions:
+                    try:
+                        attn_resolutions.remove(curr_res)
+                    except ValueError:
+                        pass
                     attn.append(AttnBlock(block_in))
             down = nn.Module()
             down.block = block
@@ -61,7 +66,7 @@ class Encoder(nn.Module):
                 down.downsample = Downsample(block_in, with_conv=True)
                 curr_res = curr_res // 2
             self.down.append(down)
-
+        assert not attn_resolutions, f"Provided invalid attention resolutions: {attn_resolutions}"
         # middle
         self.mid = nn.Module()
         self.mid.block_1 = ResnetBlock(in_channels=block_in,
@@ -122,6 +127,7 @@ class Decoder(nn.Module):
         in_ch_mult = (1,) + tuple(config.ch_mult)
         block_in = config.ch * config.ch_mult[self.num_resolutions - 1]
         curr_res = config.resolution // 2 ** (self.num_resolutions - 1 + 1)
+        attn_resolutions = list(config.attn_resolutions)
         print(f"nets.Decoder : shape of latent is {config.z_channels, curr_res, curr_res}.")
 
         # z to block_in
@@ -156,6 +162,10 @@ class Decoder(nn.Module):
                                          dropout=config.dropout))
                 block_in = block_out
                 if curr_res in config.attn_resolutions:
+                    try:
+                        attn_resolutions.remove(curr_res)
+                    except ValueError:
+                        pass
                     attn.append(AttnBlock(block_in))
             up = nn.Module()
             up.block = block
@@ -164,6 +174,7 @@ class Decoder(nn.Module):
                 up.upsample = Upsample(block_in, with_conv=True)
                 curr_res = curr_res * 2
             self.up.insert(0, up)  # prepend to get consistent order
+        assert not attn_resolutions, f"Provided invalid attention resolutions: {attn_resolutions}"
 
         # end
         self.norm_out = Normalize(block_in)

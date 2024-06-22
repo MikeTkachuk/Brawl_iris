@@ -83,10 +83,10 @@ class WorldModel(nn.Module):
         Get a list of heads generating n tokens at once
         :return:
         """
-        chunk_size = (self.config.tokens_per_block - 1) // self.config.n_gen_heads
-        assert self.config.tokens_per_block - 1 == self.config.n_gen_heads * chunk_size
-        mask = [1] + (chunk_size - 1)*[0]
-        mask = self.config.n_gen_heads * mask
+        num_chunks = (self.config.tokens_per_block - 1) // self.config.n_gen_heads
+        assert self.config.tokens_per_block - 1 == self.config.n_gen_heads * num_chunks
+        mask = [1] + (self.config.n_gen_heads - 1) * [0]
+        mask = num_chunks * mask
         mask = torch.tensor(mask[1:] + [0, 1]).int()  # shift by one and add "0" for action token prediction
         heads = []
         for i in range(self.config.n_gen_heads):
@@ -167,7 +167,7 @@ class WorldModel(nn.Module):
         mask_fill = torch.logical_not(mask_padding)  # to be filled with -100 (default ignore index in F.cross_entropy)
         labels_observations = rearrange(obs_tokens.masked_fill(mask_fill.unsqueeze(-1).expand_as(obs_tokens), -100),
                                         'b t k -> b (t k)')[:, self.config.n_gen_heads:]
-        # TODO make more bins for rewards
-        labels_rewards = self.encode_rewards(rewards).masked_fill(mask_fill, -100).long()  # Rewards clipped to {-1, 0, 1}
+        labels_rewards = self.encode_rewards(rewards).masked_fill(mask_fill,
+                                                                  -100).long()  # Rewards clipped to {-1, 0, 1}
         labels_ends = ends.masked_fill(mask_fill, -100)
         return labels_observations.reshape(-1), labels_rewards.reshape(-1), labels_ends.reshape(-1)

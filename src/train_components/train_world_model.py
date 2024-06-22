@@ -131,7 +131,7 @@ def main(cfg):
                                  config=instantiate(cfg.world_model),
                                  reward_map=cfg.env.reward_map,
                                  reward_divisor=cfg.env.reward_divisor
-                                 ).to(device).train().eval()
+                                 ).to(device).train()
         optimizer = torch.optim.Adam(world_model.parameters(),
                                      lr=cfg.training.learning_rate,
                                      weight_decay=cfg.training.world_model.weight_decay)
