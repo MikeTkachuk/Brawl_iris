@@ -78,6 +78,7 @@ def remove_dir(path, should_ask=False):
 
 
 def compute_lambda_returns(rewards, values, ends, gamma, lambda_):
+    """Requires end alignment. Otherwise, reward is the starting point instead of reward + value"""
     assert rewards.ndim == 2 or (rewards.ndim == 3 and rewards.size(2) == 1)
     assert rewards.shape == ends.shape == values.shape, f"{rewards.shape}, {values.shape}, {ends.shape}"  # (B, T, 1)
     t = rewards.size(1)
@@ -90,6 +91,27 @@ def compute_lambda_returns(rewards, values, ends, gamma, lambda_):
         lambda_returns[:, i] += ends[:, i].logical_not() * gamma * lambda_ * last
         last = lambda_returns[:, i]
 
+    return lambda_returns
+
+
+def compute_masked_lambda_returns(rewards,
+                                  values,
+                                  ends,
+                                  mask_paddings,
+                                  gamma=0.995,
+                                  lambda_=0.95,
+                                  ):
+    lambda_returns = torch.zeros_like(values)
+    for b in range(rewards.size(0)):
+        rewards_masked = rewards[b][mask_paddings[b]]
+        values_masked = values[b][mask_paddings[b]]
+        ends_masked = ends[b][mask_paddings[b]]
+        if mask_paddings[b].count_nonzero():
+            lambda_returns[b][mask_paddings[b]] = compute_lambda_returns(rewards_masked[None, ...],
+                                                                         values_masked[None, ...],
+                                                                         ends_masked[None, ...],
+                                                                         gamma,
+                                                                         lambda_)
     return lambda_returns
 
 
@@ -185,7 +207,7 @@ class ActionTokenizer:
     def __init__(self, n_binary_actions=3, move_shot_anchors=(4, 4)):
         self.n_binary_actions = n_binary_actions
         self.move_shot_anchors = move_shot_anchors if hasattr(move_shot_anchors, "__len__") else (
-                                                                                                 move_shot_anchors,) * 2
+                                                                                                     move_shot_anchors,) * 2
 
         self.n_actions = 2 ** self.n_binary_actions * (1 + move_shot_anchors[0]) * move_shot_anchors[1]
         self.bit_space = (len(bin(self.move_shot_anchors[0])) - 2,
@@ -305,6 +327,6 @@ class ActionTokenizer:
 if __name__ == "__main__":
     a = ActionTokenizer()
     cont = [0.5, 0.5, 0.0]
-    token = a.create_action_token(0,1,1,0,1,3)
+    token = a.create_action_token(0, 1, 1, 0, 1, 3)
     print(token)
     print(a.parse_action_token([token, *cont]))

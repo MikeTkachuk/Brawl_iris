@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "imagine"
+  name: "avg_frames"
   group: null
   tags: []
   notes: ""

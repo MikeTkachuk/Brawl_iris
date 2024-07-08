@@ -101,7 +101,7 @@ class WorldModelEnv:
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
         self.obs_probas = torch.cat(obs_probas, dim=1)
         obs = self.decode_obs_tokens()
-        return obs, reward, done, None
+        return obs, reward, done, {"value": outputs_wm.block_values.flatten().cpu().numpy()}
 
     @torch.no_grad()
     def render_batch(self) -> List[Image.Image]:

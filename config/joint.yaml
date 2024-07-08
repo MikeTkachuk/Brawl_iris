@@ -33,7 +33,7 @@ common:
 training:
   epochs_per_job: 1 # number of epochs to be run per job submission
   learning_rate: 1e-4
-  grad_acc_steps: 1
+  grad_acc_steps: 3
   tokenizer_weight: 0.25
   tokenizer:
     batch_num_samples: 4

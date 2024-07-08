@@ -31,6 +31,7 @@ def custom_setup(cfg):
     torch.backends.cudnn.benchmark = True
     if sys.gettrace() is not None:  # if debugging
         cfg.wandb.mode = "offline"
+        cfg.training.tokenizer.batch_num_samples = 2
     cfg.wandb.tags = list(set(cfg.wandb.tags or [] + ["tokenizer"]))
     wandb.init(config=OmegaConf.to_container(cfg, resolve=True),
                reinit=True,
@@ -41,10 +42,9 @@ def custom_setup(cfg):
 @hydra.main(config_path="../../config", config_name="tokenizer")
 def main(cfg):
     # todo: increase loss contrast (abs(l)^3 / 3 loss)
+    # todo: explore embedding matching loss (1 and -2 layers)
     # todo: (?) add different maps. tok overfits to patch distribution of single map
     # todo: fit -> add mistakes to dataset -> fit again with new weights
-    # todo: [WM] eval with decoder, log tok losses
-    # todo: [WM] sequence gan loss for distribution matching
     try:
         set_seed(cfg.common.seed)
         Path("checkpoints/dataset").mkdir(parents=True, exist_ok=True)
@@ -70,6 +70,10 @@ def main(cfg):
                                                     tokenizer=True,
                                                     num_workers=2,
                                                     prefetch_factor=4)
+        # todo: load checkpoint and reinit
+        state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\input_artifacts\tokenizer.pt")
+        state_dict.pop("embedding.weight")
+        tokenizer.load_state_dict(state_dict, strict=False)
 
         custom_setup(cfg)
 
@@ -139,12 +143,12 @@ def main(cfg):
                     log_routine(eval_metrics, mode="eval", batch=batch, count_tokens=eval_tokens)
                     tokenizer.train()
 
-                if i % 1200 == 0:
-                    if all_tokens:
-                        log_routine({}, media=False, count_tokens=all_tokens)
-                        all_tokens = []
+                if (i - 200) % 2000 == 0 and all_tokens:
+                    log_routine({}, media=False, count_tokens=all_tokens)
+                    all_tokens = []
+                if i == 250 and cfg.training.tokenizer.do_kmeans_reinit:
                     tokenizer.eval()
-                    tokenizer.init_embedding_kmeans(dataloader, num_batches=256)
+                    tokenizer.init_embedding_kmeans(dataloader, num_batches=2048)
                     tokenizer.train()
 
                 sample = next(data_iterator)
@@ -157,14 +161,7 @@ def main(cfg):
                     all_tokens.append(tokens[0].detach())
 
                 if (i + 1) % cfg.training.tokenizer.grad_acc_steps == 0:
-                    # # todo:
-                    # g = tokenizer.ad_loss.discriminator[0].weight.grad.abs().mean(0)
-                    # f, ax = plt.subplots()
-                    # ax.plot(g.cpu().numpy())
-                    # wandb.log({"train/discr_grad": wandb.Image(f)})
-                    # plt.close("all")
-                    # # end todo
-                    adaptive_gradient_clipping(tokenizer.parameters(), lam=cfg.training.actor_critic.agc_lambda)
+                    adaptive_gradient_clipping(tokenizer.parameters(), lam=cfg.training.tokenizer.agc_lambda)
                     optimizer.step()
                     for param in tokenizer.parameters():
                         param.grad = None

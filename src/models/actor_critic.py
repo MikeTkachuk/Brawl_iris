@@ -315,10 +315,10 @@ class ActorCritic(nn.Module):
             return self.act_tokenizer.create_action_token(*factorized)
 
         if self.act_lock is not None:
-            action.apply_(_lock_one)
+            action = action.to("cpu").apply_(_lock_one).to(self.device)
         if self.act_continuous_lock is not None:
-            mask = torch.tensor([i is not None for i in self.act_continuous_lock])
-            action_cont = torch.where(mask, torch.tensor(self.act_continuous_lock), action_cont)
+            mask = torch.tensor([i is not None for i in self.act_continuous_lock], device=self.device)
+            action_cont = torch.where(mask, torch.tensor(self.act_continuous_lock, device=self.device), action_cont)
         return action, action_cont
 
     @staticmethod
@@ -629,8 +629,8 @@ class ConvActorCritic(ActorCritic):
               mask_padding: Optional[torch.Tensor] = None) -> None:
         device = self.backbone.blocks[0][0].weight.device
         dtype = torch.float16 if self.fp16 else torch.float32
-        self.hx = torch.zeros(n, self.lstm_dim, 6, 6, dtype=dtype, device=device)
-        self.cx = torch.zeros(n, self.lstm_dim, 6, 6, dtype=dtype, device=device)
+        self.hx = torch.zeros(n, self.lstm_dim, 8, 8, dtype=dtype, device=device)
+        self.cx = torch.zeros(n, self.lstm_dim, 8, 8, dtype=dtype, device=device)
         if burnin_observations is not None:
             assert burnin_observations.ndim == 5 and burnin_observations.size(
                 0) == n and mask_padding is not None and burnin_observations.shape[:2] == mask_padding.shape

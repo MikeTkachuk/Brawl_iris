@@ -28,18 +28,17 @@ device = "cuda"
 
 
 @torch.no_grad()
-def generate_token_dataset():
+def generate_token_dataset(tokenizer_path=r"input_artifacts\tokenizer.pt", dataset_name="token_dataset"):
     with hydra.initialize(config_path="../../config"):
-        cfg = hydra.compose(config_name="trainer")
-    action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
+        cfg = hydra.compose(config_name="tokenizer")
     tokenizer: Tokenizer = instantiate(cfg.tokenizer)
     tokenizer.load_state_dict(
-        torch.load(r"input_artifacts\tokenizer.pt")
+        torch.load(tokenizer_path)
     )
     tokenizer.to(device).eval()
 
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
-    dataset.max_num_episodes = int(1E9)
+    dataset.max_num_episodes = -1
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
     token_dataset = {}
     for ep_id in tqdm(dataset.disk_episodes, desc="Episodes: "):
@@ -54,16 +53,14 @@ def generate_token_dataset():
                                       should_preprocess=True).tokens
             all_tokens.append(tokens)
         tokens = torch.cat(all_tokens, dim=1)[0]
-        action_tokens = [action_tokenizer.create_action_token(*a.cpu().numpy()) for a in
-                         episode.actions]
         token_dataset[ep_id] = {
             "tokens": tokens,
-            "actions": torch.LongTensor(action_tokens),
+            "actions": episode.actions,
             "actions_continuous": episode.actions_continuous,
             "rewards": episode.rewards,
             "ends": episode.ends
         }
-    torch.save(token_dataset, r"input_artifacts/token_dataset.pt")
+    torch.save(token_dataset, fr"input_artifacts/{dataset_name}.pt")
 
 
 def get_dataloader(dataset: dict, batch_size, segment_len, steps_per_epoch=None):
@@ -137,10 +134,12 @@ def main(cfg):
                                      weight_decay=cfg.training.world_model.weight_decay)
 
         # load checkpoint
-        # world_model.load_state_dict(state_dict, strict=False)
+        state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\small_voc_wm\2024-07-03_17-31-24\checkpoints\optimizer.pt")
+        [state_dict.pop(n) for n in list(state_dict) if "head" in n]
+        world_model.load_state_dict(state_dict, strict=False)
         # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\optimizer.pt", map_location=device))
 
-        dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset.pt")
+        dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset_64.pt")
         custom_setup(cfg)
         train_keys, eval_keys = train_test_split(list(dataset.keys()), test_size=0.15)
         train_dataset = {k: dataset[k] for k in train_keys}
@@ -150,7 +149,9 @@ def main(cfg):
         for n_step in tqdm(range(100_000), desc="Steps: "):
             batch = next(dataloader)
             batch = {k: v.to(device) for k, v in batch.items()}
-            loss = world_model.compute_loss(batch, None)
+            loss = world_model.compute_loss(batch, None,
+                                            gamma=cfg.training.world_model.gamma,
+                                            lambda_=cfg.training.world_model.lambda_)
             loss.loss_total.backward()
             if (n_step + 1) % cfg.training.world_model.grad_acc_steps == 0:
                 adaptive_gradient_clipping(world_model.parameters(), lam=cfg.training.world_model.agc_lambda)
@@ -172,7 +173,10 @@ def main(cfg):
                 with torch.no_grad():
                     for batch in eval_dataloader:
                         batch = {k: v.to(device) for k, v in batch.items()}
-                        eval_metrics.append(world_model.compute_loss(batch, None).intermediate_losses)
+                        eval_loss = world_model.compute_loss(batch, None,
+                                                             gamma=cfg.training.world_model.gamma,
+                                                             lambda_=cfg.training.world_model.lambda_)
+                        eval_metrics.append(eval_loss.intermediate_losses)
                 avg_eval_metrics = {f"eval/{k}": sum([m[k] for m in eval_metrics]) / len(eval_metrics) for k in
                                     eval_metrics[0]}
                 wandb.log(avg_eval_metrics)
@@ -197,7 +201,7 @@ def main_ac_head(cfg):
 
 
 @torch.no_grad()
-def explore_world_model(checkpoint_path=None):
+def explore_world_model(checkpoint_path=None, tokenizer_path=r"input_artifacts\tokenizer.pt"):
     from src.envs.world_model_env import WorldModelEnv
     wm_checkpoint_path = checkpoint_path or Path(
         r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\world_model\2024-05-04_21-35-54\checkpoints\last.pt")
@@ -207,7 +211,7 @@ def explore_world_model(checkpoint_path=None):
 
     tokenizer: Tokenizer = instantiate(cfg.tokenizer)
     tokenizer.load_state_dict(
-        torch.load(r"input_artifacts\tokenizer.pt")
+        torch.load(tokenizer_path)
     )
     tokenizer.to(device).eval()
     action_tokenizer = ActionTokenizer(move_shot_anchors=cfg.env.train.move_shot_anchors)
@@ -221,7 +225,7 @@ def explore_world_model(checkpoint_path=None):
 
     world_model.load_state_dict(state_dict, strict=False)
     dataset: EpisodesDataset = instantiate(cfg.datasets.train)
-    dataset.max_num_episodes = int(1E9)
+    dataset.max_num_episodes = -1
     dataset.load_disk_checkpoint(Path(r"input_artifacts\dataset"))
 
     wm_env = WorldModelEnv(tokenizer, world_model, device)
@@ -243,10 +247,7 @@ def explore_world_model(checkpoint_path=None):
         token = action_tokenizer.create_action_token(
             make_move, make_shot, super_ability, use_gadget, move_anchor, shot_anchor
         )
-        tok_b = wm_env.obs_tokens.reshape(12, 12)
         out = wm_env.step(token, continuous=[move_shift, shot_shift, shot_strength])
-        to_print = np.array_str(wm_env.obs_probas.reshape(12, 12).cpu().numpy(), precision=2, suppress_small=True)
-        print(tok_b)
         return out
 
     ###
@@ -258,7 +259,7 @@ def explore_world_model(checkpoint_path=None):
     from PIL import Image, ImageTk
     import numpy as np
 
-    IMG_SIZE = 512
+    IMG_SIZE = 380
 
     class Counter:
         pass
@@ -292,10 +293,10 @@ def explore_world_model(checkpoint_path=None):
         image_label.image = p_image
 
     def after_step(*args):
-        obs, reward, done = args[:3]
+        obs, reward, done, info = args[:4]
         update_image(obs)
         counter.value += 1
-        info_var.set(f"Reward: {reward.item()}. Done: {done.item()}. Step: {counter.value}")
+        info_var.set(f"value: {info['value'].item()}. Reward: {reward.item()}. Done: {done.item()}. Step: {counter.value}")
 
     def after_reset(*args):
         counter.value = 0
@@ -358,8 +359,10 @@ if __name__ == "__main__":
     # todo: eval with decoder, log tokenizer losses
     # todo: sequence gan loss for distribution matching
 
-    # generate_token_dataset()
-    # main()
-    explore_world_model(
-        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\12_new_head\2024-06-16_11-02-44\checkpoints\last.pt",
-        max_context=None)
+    # generate_token_dataset(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm_tok\2024-07-03_10-26-48\checkpoints\last.pt",
+    #                        "token_dataset_64")
+    main()
+    # explore_world_model(
+    #     r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\small_voc_wm\2024-07-03_12-25-17\checkpoints\last.pt",
+    #     r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm_tok\2024-07-03_10-26-48\checkpoints\last.pt"
+    # )

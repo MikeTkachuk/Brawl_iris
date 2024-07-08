@@ -11,7 +11,7 @@ from .kv_caching import KeysValues
 from .slicer import Embedder, Head
 from .tokenizer import Tokenizer
 from .transformer import Transformer, TransformerConfig
-from src.utils import init_weights, LossWithIntermediateLosses
+from src.utils import init_weights, LossWithIntermediateLosses, compute_masked_lambda_returns
 
 
 @dataclass
@@ -20,6 +20,7 @@ class WorldModelOutput:
     logits_observations: torch.FloatTensor
     logits_rewards: torch.FloatTensor
     logits_ends: torch.FloatTensor
+    block_values: torch.FloatTensor
 
 
 class WorldModel(nn.Module):
@@ -73,6 +74,16 @@ class WorldModel(nn.Module):
             )
         )
 
+        self.head_values = Head(
+            max_blocks=config.max_blocks,
+            block_mask=nd_last_obs_pattern,
+            head_module=nn.Sequential(
+                nn.Linear(config.embed_dim, config.embed_dim),
+                nn.ReLU(),
+                nn.Linear(config.embed_dim, 1)
+            )
+        )
+
         self.apply(init_weights)
 
     def __repr__(self) -> str:
@@ -123,13 +134,14 @@ class WorldModel(nn.Module):
                     self.pos_emb(prev_steps + torch.arange(num_steps, device=tokens.device))
 
         x = self.transformer(sequences, past_keys_values)
+        # todo: make heads sequential, not parallel via extra emb input and in-build sampling
         obs_per_head = [head(x, num_steps=num_steps, prev_steps=prev_steps) for head in self.obs_heads]
 
         logits_observations = rearrange(obs_per_head, "h b t e -> b (t h) e")
         logits_rewards = self.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_ends = self.head_ends(x, num_steps=num_steps, prev_steps=prev_steps)
-
-        return WorldModelOutput(x, logits_observations, logits_rewards, logits_ends)
+        block_values = self.head_values(x, num_steps=num_steps, prev_steps=prev_steps)[..., 0]
+        return WorldModelOutput(x, logits_observations, logits_rewards, logits_ends, block_values)
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, **kwargs: Any) -> LossWithIntermediateLosses:
         if "tokens" in batch:
@@ -141,7 +153,7 @@ class WorldModel(nn.Module):
         act_continuous = batch['actions_continuous']
         tokens = rearrange(torch.cat((obs_tokens, act_tokens), dim=2), 'b l k1 -> b (l k1)')  # (B, L(K+1))
 
-        outputs = self(tokens, continuous=act_continuous)
+        outputs: WorldModelOutput = self(tokens, continuous=act_continuous)
 
         labels_observations, labels_rewards, labels_ends = self.compute_labels_world_model(obs_tokens, batch['rewards'],
                                                                                            batch['ends'],
@@ -156,9 +168,19 @@ class WorldModel(nn.Module):
         loss_rewards = (loss_rewards * (1 - (-loss_rewards).exp()).pow(2)).mean()
         loss_ends = F.cross_entropy(rearrange(outputs.logits_ends, 'b t e -> (b t) e'), labels_ends, reduction="none")
         loss_ends = (loss_ends * (1 - (-loss_ends).exp()).pow(2)).mean()
+        with torch.no_grad():
+            lambda_returns = compute_masked_lambda_returns(batch['rewards'],
+                                                           outputs.block_values.detach(),
+                                                           batch['ends'],
+                                                           batch['mask_padding'],
+                                                           kwargs.get("gamma", 0.995),
+                                                           kwargs.get("lambda_", 0.95)
+                                                           )
+        loss_values = torch.square(outputs.block_values - lambda_returns)
+        loss_values = torch.masked_select(loss_values, batch['mask_padding']).mean()
 
         return LossWithIntermediateLosses(loss_obs=loss_obs, loss_rewards=loss_rewards,
-                                          loss_ends=loss_ends)
+                                          loss_ends=loss_ends, loss_values=loss_values)
 
     def compute_labels_world_model(self, obs_tokens: torch.Tensor, rewards: torch.Tensor, ends: torch.Tensor,
                                    mask_padding: torch.BoolTensor) -> Tuple[

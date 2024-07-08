@@ -11,7 +11,6 @@ from typing import Union
 from einops import rearrange
 from torch.distributions import Categorical
 
-
 SOURCE_ROOT = str(Path(__file__).absolute().parents[2])
 sys.path.append(SOURCE_ROOT)
 
@@ -49,8 +48,9 @@ class JointWM(torch.nn.Module):
         self.wm_embed_map = torch.nn.Linear(self.tokenizer.embed_dim, self.world_model.config.embed_dim)
 
     @staticmethod
-    def norm(x, dim=-1, eps=1E-4):
-        return x / (torch.norm(x, dim=dim, keepdim=True) + eps) * math.sqrt(x.size(dim))
+    def norm(x, dim=-1, eps=1E-4, effect=1.0):
+        normed = x / (torch.norm(x, dim=dim, keepdim=True) + eps) * math.sqrt(x.size(dim))
+        return normed * effect + (1 - effect) * x
 
     def encode_observations(self, x):
         shape = x.shape  # (..., C, H, W)
@@ -59,7 +59,7 @@ class JointWM(torch.nn.Module):
         z = self.tokenizer.pre_quant_norm(z)
         z = self.tokenizer.pre_quant_conv(z)
         z = z.reshape(*shape[:-3], *z.shape[1:])
-        z = self.norm(z, dim=-3)
+        z = self.norm(z, dim=-3, effect=0.1)
         return z
 
     def decode_observations(self, x):
@@ -100,7 +100,7 @@ class JointWM(torch.nn.Module):
         obs_per_head = [head(x, num_steps=num_steps, prev_steps=prev_steps) for head in self.world_model.obs_heads]
 
         logits_observations = rearrange(obs_per_head, "h b t e -> b (t h) e")
-        logits_observations = self.norm(logits_observations)
+        logits_observations = self.norm(logits_observations, effect=0.1)
         logits_rewards = self.world_model.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_ends = self.world_model.head_ends(x, num_steps=num_steps, prev_steps=prev_steps)
         return logits_observations, logits_rewards, logits_ends
@@ -127,7 +127,7 @@ class JointWM(torch.nn.Module):
         emb_flat2 = rearrange(emb_flat, "b t l e -> b (t l) e")
         logit_obs, logit_r, logit_end = self.wm_forward(wm_sequence)
         pred_emb_flat = torch.cat([emb_flat2[:, :self.world_model.config.n_gen_heads],
-                              logit_obs[:, :-self.world_model.config.n_gen_heads]], dim=1)
+                                   logit_obs[:, :-self.world_model.config.n_gen_heads]], dim=1)
         pred_emb = rearrange(pred_emb_flat, "b (t h w) e -> b t e h w", h=emb.size(-2), w=emb.size(-1))
         _, labels_rewards, labels_ends = self.world_model.compute_labels_world_model(
             torch.zeros_like(emb_flat[..., 0]),  # placeholder
@@ -137,8 +137,8 @@ class JointWM(torch.nn.Module):
         )
 
         # todo: emb wm labels detach vs no detach experiment
-        wm_obs_loss = torch.nn.functional.mse_loss(emb.detach()[batch['mask_padding']],
-                                                   pred_emb[batch['mask_padding']])
+        wm_obs_loss = torch.subtract(emb.detach()[batch['mask_padding']],
+                                     pred_emb[batch['mask_padding']]).abs().mean()
         loss_rewards = torch.nn.functional.cross_entropy(rearrange(logit_r, 'b t e -> (b t) e'), labels_rewards,
                                                          reduction="none")
         loss_rewards = (loss_rewards * (1 - (-loss_rewards).exp()).pow(2)).mean()
@@ -149,7 +149,7 @@ class JointWM(torch.nn.Module):
         wm_rec_loss = torch.square(x_tok - pred_rec).mean()
         wm_perc_loss = torch.mean(self.tokenizer.lpips(x_tok, pred_rec))
         wm_loss = LossWithIntermediateLosses(
-            wm_obs_loss=wm_obs_loss,
+            wm_obs_loss=4*wm_obs_loss,
             loss_rewards=loss_rewards,
             loss_ends=loss_ends,
             wm_rec_loss=wm_rec_loss * 0.3,
@@ -225,8 +225,8 @@ def main(cfg):
                                      weight_decay=cfg.training.world_model.weight_decay)
 
         # load checkpoint
-        # state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\init_joint\2024-06-17_18-30-16\checkpoints\last.pt")
-        # joint_wm.load_state_dict(state_dict)
+        state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm\2024-06-22_14-47-24\checkpoints\last.pt")
+        joint_wm.load_state_dict(state_dict)
         # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\optimizer.pt", map_location=device))
 
         custom_setup(cfg)
@@ -322,7 +322,8 @@ class ContWMEnv:
     def refresh_keys_values_with_initial_obs_tokens(self, obs_sequences):
         n, num_observations_tokens = obs_sequences.shape[:2]
         assert num_observations_tokens == self.num_observations_tokens
-        self.keys_values_wm = self.world_model.transformer.generate_empty_keys_values(n=n, max_tokens=self.world_model.config.max_tokens)
+        self.keys_values_wm = self.world_model.transformer.generate_empty_keys_values(n=n,
+                                                                                      max_tokens=self.world_model.config.max_tokens)
         outputs_wm = self.module.wm_forward(obs_sequences, past_keys_values=self.keys_values_wm)
         return outputs_wm
 
@@ -330,7 +331,8 @@ class ContWMEnv:
         token = action.clone().detach() if isinstance(action, torch.Tensor) else torch.tensor(action, dtype=torch.long)
         token = token.reshape(-1, 1).to(self.device)  # (B, 1)
         if action_continuous is not None:
-            action_continuous = action_continuous.clone().detach() if isinstance(action_continuous, torch.Tensor) else torch.tensor(
+            action_continuous = action_continuous.clone().detach() if isinstance(action_continuous,
+                                                                                 torch.Tensor) else torch.tensor(
                 action_continuous,
                 dtype=torch.float)
             action_continuous = action_continuous.reshape(-1, 1, self.world_model.act_continuous_size).to(
@@ -370,14 +372,14 @@ class ContWMEnv:
         done = Categorical(logits=logits_ends / self.temperature).sample().cpu().numpy().astype(
             bool).reshape(-1)  # (B,)
 
-        self.obs_sequences = torch.cat(output_sequence, dim=1)        # (B, K, E)
+        self.obs_sequences = torch.cat(output_sequence, dim=1)  # (B, K, E)
         obs = self.decode_obs_tokens()
         return obs, reward, done, None
 
     @torch.no_grad()
     def decode_obs_tokens(self):
         z = rearrange(self.obs_sequences, 'b (h w) e -> b e h w', h=int(math.sqrt(self.num_observations_tokens)))
-        rec = self.module.decode_observations(z)         # (B, C, H, W)
+        rec = self.module.decode_observations(z)  # (B, C, H, W)
         return torch.clamp(self.tokenizer.postprocess_output(rec), 0, 1)
 
 
@@ -524,4 +526,5 @@ def explore_world_model(checkpoint_path=None):
 
 if __name__ == "__main__":
     main()
-    explore_world_model(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm\2024-06-22_00-01-12\checkpoints\last.pt")
+    explore_world_model(
+        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm\2024-06-22_14-47-24\checkpoints\last.pt")

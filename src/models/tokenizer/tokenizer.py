@@ -1,6 +1,7 @@
 """
 Credits to https://github.com/CompVis/taming-transformers
 """
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Tuple
@@ -11,9 +12,9 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from src.dataset import Batch
-from .lpips import LPIPS
-from .nets import Encoder, Decoder, Normalize
-from .adversarial import AdversarialLoss
+from src.models.tokenizer.lpips import LPIPS
+from src.models.tokenizer.nets import Encoder, Decoder, Normalize
+from src.models.tokenizer.adversarial import AdversarialLoss
 from src.utils import LossWithIntermediateLosses
 
 from sklearn.cluster import BisectingKMeans
@@ -81,7 +82,8 @@ class Tokenizer(nn.Module):
             tokens_placeholder[0] = enc_output.tokens
 
         beta = 0.25  # simplify z optimization. codebook will be updated with kmeans
-        commitment_loss = (1 - beta) * (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(2).mean()
+        commitment_loss = (1 - beta) * (z.detach() - z_quantized).pow(2).mean() + beta * (z - z_quantized.detach()).pow(
+            2).mean()
         if pixel_weights is not None:
             reconstruction_loss = (pixel_weights * torch.square(observations - reconstructions)).mean()
         else:
@@ -89,20 +91,21 @@ class Tokenizer(nn.Module):
         perceptual_loss = torch.mean(self.lpips(observations, reconstructions))
         if self.ad_loss_enabled:
             ad_logits = self.ad_loss(torch.cat([observations, reconstructions]), blur=True).flatten()
-            discr_labels = torch.zeros((observations.size(0)*2,), dtype=torch.float, device=ad_logits.device)
+            discr_labels = torch.zeros((observations.size(0) * 2,), dtype=torch.float, device=ad_logits.device)
             discr_labels[:observations.size(0)] = 1
             discr_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits, discr_labels)
             gen_loss = nn.functional.binary_cross_entropy_with_logits(ad_logits[observations.size(0):],
-                                                   torch.ones_like(discr_labels)[:observations.size(0)])
+                                                                      torch.ones_like(discr_labels)[
+                                                                      :observations.size(0)])
         else:
             discr_loss = 0
             gen_loss = 0
 
-        return LossWithIntermediateLosses(commitment_loss=self.loss_weights[0]*commitment_loss,
-                                          reconstruction_loss=self.loss_weights[1]*reconstruction_loss,
-                                          perceptual_loss=self.loss_weights[2]*perceptual_loss,
-                                          discr_loss=self.loss_weights[3]*discr_loss,
-                                          gen_loss=self.loss_weights[4]*gen_loss)
+        return LossWithIntermediateLosses(commitment_loss=self.loss_weights[0] * commitment_loss,
+                                          reconstruction_loss=self.loss_weights[1] * reconstruction_loss,
+                                          perceptual_loss=self.loss_weights[2] * perceptual_loss,
+                                          discr_loss=self.loss_weights[3] * discr_loss,
+                                          gen_loss=self.loss_weights[4] * gen_loss)
 
     def do_backward(self, loss):
         if self.ad_loss_enabled:
@@ -117,6 +120,7 @@ class Tokenizer(nn.Module):
         z = self.encoder(x)
         z = self.pre_quant_norm(z)
         z = self.pre_quant_conv(z)
+        z = z / ((z.norm(dim=1, keepdim=True) + 1E-5) / math.sqrt(z.size(1)))
         b, e, h, w = z.shape
         z_flattened = rearrange(z, 'b e h w -> (b h w) e')
         dist_to_embeddings = torch.sum(z_flattened ** 2, dim=1, keepdim=True) + \
@@ -136,6 +140,8 @@ class Tokenizer(nn.Module):
     def decode(self, z_q: torch.Tensor, should_postprocess: bool = False) -> torch.Tensor:
         shape = z_q.shape  # (..., E, h, w)
         z_q = z_q.view(-1, *shape[-3:])
+        z_q = z_q / ((z_q.norm(dim=1, keepdim=True) + 1E-5) / math.sqrt(z_q.size(1)))
+
         z_q = self.post_quant_conv(z_q)
         rec = self.decoder(z_q)
         rec = rec.reshape(*shape[:-3], *rec.shape[1:])
@@ -171,10 +177,43 @@ class Tokenizer(nn.Module):
                 break
             batch, _ = sample
             emb = self.encode(batch["observations"].to(device)).z
-            embeddings.append(emb)
-        embeddings = rearrange(embeddings, '... c h w -> (... h w) c')
-        print("Starting kmeans fit.")
+            emb = rearrange(emb, '... c h w -> (... h w) c')
+            embeddings.append(emb.cpu())
+        embeddings = torch.cat(embeddings, dim=0)
+        print(f"Starting kmeans fit. {embeddings.size(0)} samples ({num_batches*emb.size(0)} before merging)")
         kmeans = BisectingKMeans(n_clusters=self.vocab_size, verbose=0, n_init=1, init="random")
         kmeans.fit(embeddings.cpu().numpy())
         self.embedding.weight.data.copy_(torch.from_numpy(kmeans.cluster_centers_))
 
+
+def merge_similar(samples, eps=0.1):
+    samples = samples.flatten(0, -2)
+    squares = torch.sum(samples ** 2, dim=1, keepdim=True)
+    dst = squares + squares[..., 0] - 2 * torch.matmul(samples, samples.t())
+    dst = dst < eps
+
+    out = []
+    curr_mask = torch.ones_like(dst[0], dtype=bool)
+    next_available = dst[0]
+    while True:
+        out.append(samples[next_available].mean(0))
+        curr_mask = torch.logical_and(curr_mask, ~next_available)
+        remainder = torch.nonzero(curr_mask).flatten()
+        if not remainder.size(0):
+            break
+        next_available = torch.logical_and(dst[remainder[0]], curr_mask)
+
+    out = torch.stack(out, dim=0)
+    return out
+
+
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+
+    samples = torch.cat([torch.tensor([[0, 5*i]]) + torch.randn(size=(20, 2)) for i in range(10)])
+    plt.scatter(*samples.numpy().T)
+
+    new_samples = merge_similar(samples, eps=1)
+    plt.scatter(*new_samples.numpy().T, alpha=0.3)
+    plt.axis("equal")
+    plt.show()

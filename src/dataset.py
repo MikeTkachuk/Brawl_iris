@@ -242,7 +242,7 @@ class EpisodesDataset:
             num_workers=num_workers if parallelize else 0,
             persistent_workers=True if parallelize else False,
             pin_memory=pin_memory,
-            prefetch_factor=prefetch_factor if parallelize else 2,  # should be 2 if not used (weird pytorch check)
+            prefetch_factor=prefetch_factor if parallelize else None,
         )
 
     def sample_replay(self, batch_num_samples: int = None, weights: Optional[Tuple[float]] = None, samples=None):
@@ -366,7 +366,8 @@ class EpisodesDataset:
         assert directory.is_dir()
         assert not self.episodes or self.lazy, "Repetitive loading"
         episode_ids = sorted([int(p.stem) for p in directory.iterdir() if p.stem.isnumeric()])
-        episode_ids = episode_ids[-self.max_num_episodes:]  # if keeping old episodes
+        if self.max_num_episodes > 0:
+            episode_ids = episode_ids[-self.max_num_episodes:]  # if keeping old episodes
         if not len(episode_ids):
             self.disk_episodes = deque()
             self.num_seen_episodes = 0
