@@ -16,7 +16,7 @@ wandb:
   mode: online
   project: iris
   entity: null
-  name: "fix_ends"
+  name: "dbg"
   group: null
   tags: []
   notes: ""
@@ -87,41 +87,3 @@ training:
     lambda_: 0.6
     gamma: 0.95
 
-
-evaluation:
-  should: False
-  every: 5
-  tokenizer:
-    batch_num_samples: ${training.tokenizer.batch_num_samples}
-    start_after_epochs: ${training.tokenizer.start_after_epochs}
-    save_reconstructions: True
-  world_model:
-    batch_num_samples: ${training.world_model.batch_num_samples}
-    start_after_epochs: ${training.world_model.start_after_epochs}
-  actor_critic:
-    num_episodes_to_save: ${training.actor_critic.batch_num_samples}
-    horizon: ${training.actor_critic.imagine_horizon}
-    start_after_epochs: ${training.actor_critic.start_after_epochs}
-
-collection:
-  train:
-    num_envs: 1
-    stop_after_epochs: 500
-    num_episodes_to_save: 10
-    config:
-      epsilon: 0.01  # random move proba
-      should_sample: True
-      temperature: 1.0
-      num_steps: 400
-      burn_in: ${training.actor_critic.burn_in}
-      speed_constraint: 2 # it per sec
-  test:
-    num_envs: 1
-    num_episodes_to_save: ${collection.train.num_episodes_to_save}
-    config:
-      epsilon: 0.0
-      should_sample: True
-      temperature: 0.5
-      num_episodes: 16
-      burn_in: ${training.actor_critic.burn_in}
-      speed_constraint: ${collection.train.config.speed_constraint}

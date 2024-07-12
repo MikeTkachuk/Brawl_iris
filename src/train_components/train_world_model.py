@@ -20,7 +20,7 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 
 from src.dataset import EpisodesDataset
-from src.utils import set_seed, adaptive_gradient_clipping, ActionTokenizer
+from src.utils import set_seed, adaptive_gradient_clipping, ActionTokenizer, load_resized_state_dict
 from src.models.tokenizer.tokenizer import Tokenizer
 from src.models.world_model import WorldModel
 
@@ -134,9 +134,10 @@ def main(cfg):
                                      weight_decay=cfg.training.world_model.weight_decay)
 
         # load checkpoint
-        state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\small_voc_wm\2024-07-03_17-31-24\checkpoints\optimizer.pt")
+        state_dict = torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\2_num_heads\2024-07-06_22-01-22\checkpoints\last.pt")
         [state_dict.pop(n) for n in list(state_dict) if "head" in n]
-        world_model.load_state_dict(state_dict, strict=False)
+        load_resized_state_dict(world_model, state_dict)
+        # world_model.load_state_dict(state_dict, strict=False)
         # optimizer.load_state_dict(torch.load(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\more_reg\2024-05-25_18-41-56\checkpoints\optimizer.pt", map_location=device))
 
         dataset = torch.load(Path(SOURCE_ROOT) / "input_artifacts/token_dataset_64.pt")
@@ -354,15 +355,14 @@ def explore_world_model(checkpoint_path=None, tokenizer_path=r"input_artifacts\t
 
 
 if __name__ == "__main__":
-    # todo: add eval to tokenizer and wm (add more episodes)
     # todo: Bert style pretraining (maybe extra attention to action tokens)
     # todo: eval with decoder, log tokenizer losses
     # todo: sequence gan loss for distribution matching
 
     # generate_token_dataset(r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm_tok\2024-07-03_10-26-48\checkpoints\last.pt",
     #                        "token_dataset_64")
-    main()
-    # explore_world_model(
-    #     r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\small_voc_wm\2024-07-03_12-25-17\checkpoints\last.pt",
-    #     r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm_tok\2024-07-03_10-26-48\checkpoints\last.pt"
-    # )
+    # main()
+    explore_world_model(
+        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\fused_gen\2024-07-08_23-52-49\checkpoints23\last.pt",
+        r"C:\Users\Michael\PycharmProjects\Brawl_iris\outputs\norm_tok\2024-07-03_10-26-48\checkpoints\last.pt"
+    )

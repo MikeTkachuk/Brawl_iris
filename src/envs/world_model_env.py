@@ -86,10 +86,9 @@ class WorldModelEnv:
             outputs_wm = self.world_model(tokens, past_keys_values=self.keys_values_wm, continuous=continuous)
             output_sequence.append(outputs_wm.output_sequence)
 
-            token_dist = Categorical(logits=outputs_wm.logits_observations/self.temperature)
-            tokens = token_dist.sample()
+            tokens = outputs_wm.gen_tokens
             obs_tokens.append(tokens)
-            obs_probas.append(token_dist.log_prob(tokens))
+            # obs_probas.append(token_dist.log_prob(tokens))
 
         # add last tokens to context
         outputs_wm = self.world_model(tokens, past_keys_values=self.keys_values_wm, continuous=continuous)
@@ -99,7 +98,7 @@ class WorldModelEnv:
             bool).reshape(-1)  # (B,)
 
         self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
-        self.obs_probas = torch.cat(obs_probas, dim=1)
+        # self.obs_probas = torch.cat(obs_probas, dim=1)
         obs = self.decode_obs_tokens()
         return obs, reward, done, {"value": outputs_wm.block_values.flatten().cpu().numpy()}
 

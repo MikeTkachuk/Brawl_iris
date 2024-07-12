@@ -5,6 +5,7 @@ from einops import rearrange
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Categorical
 
 from src.dataset import Batch
 from .kv_caching import KeysValues
@@ -21,6 +22,32 @@ class WorldModelOutput:
     logits_rewards: torch.FloatTensor
     logits_ends: torch.FloatTensor
     block_values: torch.FloatTensor
+    gen_tokens: torch.LongTensor
+
+
+class ObsHeadModule(nn.Module):
+    def __init__(self, n_extra=0, emb_size=512):
+        super().__init__()
+        self.n_extra = n_extra
+        self.emb_size = emb_size
+        self.reducers = nn.ModuleList()
+        self.reduced_emb_size = self.emb_size // 8
+        for i in range(self.n_extra):
+            self.reducers.append(nn.Linear(self.emb_size, self.reduced_emb_size))
+        self.merger = nn.Linear(self.emb_size + self.reduced_emb_size * self.n_extra, self.emb_size)
+
+    def forward(self, x: torch.Tensor):
+        """
+
+        :param x: expects transformer sequence at position 0
+        :return:
+        """
+        b, t, n, e = x.size()
+        assert n == self.n_extra + 1, f"Expecting {self.n_extra} extra embeddings in dim 2. Got {n} total."
+        reduced = [self.reducers[i](x[..., i + 1, :]) for i in range(self.n_extra)]
+        reduced = rearrange(reduced, "n b t e -> b t (n e)") if reduced else x[..., 1:, :].flatten(-2)
+        merged = torch.cat([x[..., 0, :], reduced], dim=-1)
+        return self.merger(merged)
 
 
 class WorldModel(nn.Module):
@@ -105,7 +132,7 @@ class WorldModel(nn.Module):
                 max_blocks=self.config.max_blocks,
                 block_mask=mask,
                 head_module=nn.Sequential(
-                    nn.Linear(self.config.embed_dim, self.config.embed_dim),
+                    ObsHeadModule(emb_size=self.config.embed_dim, n_extra=i),
                     nn.ReLU(),
                     nn.Linear(self.config.embed_dim, self.obs_vocab_size)
                 )
@@ -125,7 +152,7 @@ class WorldModel(nn.Module):
         return self.reward_list[rewards.to("cpu")].to(rewards.device) / self.reward_divisor
 
     def forward(self, tokens: torch.LongTensor, past_keys_values: Optional[KeysValues] = None,
-                continuous=None) -> WorldModelOutput:
+                continuous=None, temperature=1.0) -> WorldModelOutput:
         num_steps = tokens.size(1)  # (B, T)
         assert num_steps <= self.config.max_tokens
         prev_steps = 0 if past_keys_values is None else past_keys_values.size
@@ -134,14 +161,37 @@ class WorldModel(nn.Module):
                     self.pos_emb(prev_steps + torch.arange(num_steps, device=tokens.device))
 
         x = self.transformer(sequences, past_keys_values)
-        # todo: make heads sequential, not parallel via extra emb input and in-build sampling
-        obs_per_head = [head(x, num_steps=num_steps, prev_steps=prev_steps) for head in self.obs_heads]
+        head_slice = self.obs_heads[0].compute_slice(num_steps=num_steps, prev_steps=prev_steps)
+        obs_slice = self.embedder.slicers[1].compute_slice(num_steps=num_steps, prev_steps=prev_steps)
+        extra_seq = rearrange(sequences[:, obs_slice], "b (n nh) e -> b n nh e", nh=self.config.n_gen_heads)
+        extra_seq = extra_seq[:, 1:]  # extra starts at #n_gen_heads
+        gen_tokens = []
+        obs_per_head = []
+        for i, head in enumerate(self.obs_heads):
+            x_obs = nn.functional.pad(x.unsqueeze(-2), pad=[0, 0, 0, i])
+            x_obs[:, head_slice[:-1], 1:] = extra_seq[:, :len(head_slice)-1, :i]
+            if gen_tokens and head_slice.size(0):
+                gen_seq = self.embedder(torch.stack(gen_tokens, dim=1), len(gen_tokens), prev_steps + i,) + \
+                          self.pos_emb((prev_steps + torch.arange(i, device=tokens.device)) % self.config.max_tokens)
+                x_obs[:, head_slice[-1], 1:] = gen_seq
+
+            logits = head(x_obs, num_steps=num_steps, prev_steps=prev_steps)
+            obs_per_head.append(logits)
+            if head_slice.size(0):
+                token_dist = Categorical(logits=logits[:, -1]/temperature)
+                token = token_dist.sample()
+            else:
+                token = torch.zeros((logits.size(0),), dtype=torch.long, device=logits.device)
+            gen_tokens.append(token)
+
+        # obs_per_head = [head(x, num_steps=num_steps, prev_steps=prev_steps) for head in self.obs_heads]
 
         logits_observations = rearrange(obs_per_head, "h b t e -> b (t h) e")
         logits_rewards = self.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_ends = self.head_ends(x, num_steps=num_steps, prev_steps=prev_steps)
         block_values = self.head_values(x, num_steps=num_steps, prev_steps=prev_steps)[..., 0]
-        return WorldModelOutput(x, logits_observations, logits_rewards, logits_ends, block_values)
+        return WorldModelOutput(x, logits_observations, logits_rewards, logits_ends,
+                                block_values, torch.stack(gen_tokens, dim=1))
 
     def compute_loss(self, batch: Batch, tokenizer: Tokenizer, **kwargs: Any) -> LossWithIntermediateLosses:
         if "tokens" in batch:
@@ -159,8 +209,8 @@ class WorldModel(nn.Module):
                                                                                            batch['ends'],
                                                                                            batch['mask_padding'],
                                                                                            )
-
-        logits_observations = rearrange(outputs.logits_observations[:, :-self.config.n_gen_heads],
+        obs_slice = slice(self.config.tokens_per_block - self.config.n_gen_heads - 1, -self.config.n_gen_heads)
+        logits_observations = rearrange(outputs.logits_observations[:, obs_slice],
                                         'b t o -> (b t) o')
         loss_obs = F.cross_entropy(logits_observations, labels_observations)
         loss_rewards = F.cross_entropy(rearrange(outputs.logits_rewards, 'b t e -> (b t) e'), labels_rewards,
@@ -188,7 +238,7 @@ class WorldModel(nn.Module):
         assert torch.all(ends.sum(dim=1) <= 1)  # at most 1 done
         mask_fill = torch.logical_not(mask_padding)  # to be filled with -100 (default ignore index in F.cross_entropy)
         labels_observations = rearrange(obs_tokens.masked_fill(mask_fill.unsqueeze(-1).expand_as(obs_tokens), -100),
-                                        'b t k -> b (t k)')[:, self.config.n_gen_heads:]
+                                        'b t k -> b (t k)')[:, self.config.tokens_per_block - 1:]
         labels_rewards = self.encode_rewards(rewards).masked_fill(mask_fill,
                                                                   -100).long()  # Rewards clipped to {-1, 0, 1}
         labels_ends = ends.masked_fill(mask_fill, -100)

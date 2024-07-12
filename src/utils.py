@@ -60,6 +60,37 @@ def init_weights(module):
         module.weight.data.fill_(1.0)
 
 
+@torch.no_grad()
+def load_resized_state_dict(module: torch.nn.Module, state_dict: dict, skip_buffers=True):
+    param_names = set()
+    for n, p in module.named_parameters():
+        param_names.add(n)
+        if n not in state_dict:
+            print(f"Missing {n}")
+            continue
+        to_load = state_dict[n].data
+        if p.data.size() == to_load.size():
+            p.data.copy_(to_load)
+        else:
+            assert len(p.data.size()) == len(to_load.size()), f"Can't load {p.data.size()} into {to_load.size()} for {n}"
+            slices = []
+            for i in range(p.data.ndim):
+                slices.append(slice(0, min(p.data.size(i), to_load.size(i))))
+            slices = tuple(slices)
+            p.data[slices] = to_load[slices]
+            print(f"Loading {n} subset of shape {to_load[slices].size()} from {to_load.size()} into {p.size()}")
+    # enforcing exact match for buffers
+    buffer_names = set()
+    if not skip_buffers:
+        for n, b in module.named_buffers():
+            buffer_names.add(n)
+            if n not in state_dict:
+                print(f"Missing {n}")
+                continue
+            b.data.copy_(state_dict[n])
+    print(f"Extra and skipped keys: \n{set(state_dict).difference(param_names.union(buffer_names))}")
+
+
 def extract_state_dict(state_dict, module_name):
     return OrderedDict({k.split('.', 1)[1]: v for k, v in state_dict.items() if k.startswith(module_name)})
 
